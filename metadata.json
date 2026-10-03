@@ -1,0 +1,6 @@
+{
+  "name": "Kirikú – Gestores de Voluntariado Social",
+  "description": "Plataforma integral de gestión de voluntariado social, catálogo público de proyectos, evaluaciones de 5 etapas, banco de postulantes y registro de donaciones.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

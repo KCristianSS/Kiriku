@@ -1,0 +1,39 @@
+{
+  "name": "kiriku-voluntariado",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build",
+    "start": "tsx server.ts",
+    "preview": "vite preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "@supabase/supabase-js": "^2.117.2",
+    "axios": "^1.20.0",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "lucide-vue-next": "^1.0.0",
+    "motion": "^12.23.24",
+    "pg": "^8.23.1",
+    "pinia": "^4.0.3",
+    "vite": "^6.2.0",
+    "vue": "^3.5.43",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/pg": "^8.23.1",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.21.0",
+    "typescript": "^7.0.2"
+  }
+}
