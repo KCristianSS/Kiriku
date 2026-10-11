@@ -1,7 +1,7 @@
 export type OrganizacionTipo = 'ONG' | 'Fundación' | 'Empresa' | 'Institución Educativa' | 'Colectivo Social' | string;
 
 export interface Organizacion {
-  id: string;
+  id: number | string;
   nombre: string;
   tipo: OrganizacionTipo;
   contacto_nombre?: string | null;
@@ -13,8 +13,8 @@ export interface Organizacion {
 export type ProyectoEstado = 'pendiente_revision' | 'aprobado' | 'rechazado';
 
 export interface Proyecto {
-  id: string;
-  organizacion_id?: string | null;
+  id: number | string;
+  organizacion_id?: number | string | null;
   titulo: string;
   descripcion: string;
   ubicacion: string;
@@ -31,7 +31,7 @@ export interface Proyecto {
 }
 
 export interface Postulante {
-  id: string;
+  id: number | string;
   nombres: string;
   apellidos: string;
   email: string;
@@ -44,7 +44,7 @@ export interface Postulante {
   created_at?: string;
 }
 
-export type PostulacionEstado = 'en_proceso' | 'aprobado' | 'rechazado' | 'reenganche';
+export type PostulacionEstado = 'en_proceso' | 'aprobado' | 'rechazado' | 'reasignacion' | 'reenganche';
 
 export type EtapaNombre =
   | 'inicial'
@@ -56,8 +56,8 @@ export type EtapaNombre =
 export type EtapaEstado = 'pendiente' | 'en_revision' | 'aprobado' | 'observado' | 'rechazado';
 
 export interface EvaluacionEtapa {
-  id: string;
-  postulacion_id: string;
+  id: number | string;
+  postulacion_id: number | string;
   etapa: EtapaNombre;
   estado: EtapaEstado;
   evaluador?: string | null;
@@ -66,11 +66,12 @@ export interface EvaluacionEtapa {
 }
 
 export interface Postulacion {
-  id: string;
-  postulante_id: string;
-  proyecto_id: string;
+  id: number | string;
+  postulante_id: number | string;
+  proyecto_id: number | string;
   estado_general: PostulacionEstado;
-  es_reenganche: boolean;
+  es_reasignacion: boolean;
+  es_reenganche?: boolean; // Compatibilidad
   created_at?: string;
   updated_at?: string;
   postulante?: Postulante;
@@ -81,13 +82,13 @@ export interface Postulacion {
 export type DonacionTipo = 'economica' | 'especie';
 
 export interface Donacion {
-  id: string;
+  id: number | string;
   donante_nombre: string;
   donante_email?: string | null;
   tipo_donacion: DonacionTipo;
   monto_bob?: number | null;
   descripcion_especie?: string | null;
-  proyecto_destino_id?: string | null;
+  proyecto_destino_id?: number | string | null;
   recibido_por: string;
   fecha_recepcion: string;
   proyecto?: Proyecto | null;
@@ -103,8 +104,19 @@ export interface CreatePostulantePayload {
   profesion_ocupacion?: string;
   habilidades?: string;
   motivacion?: string;
-  proyecto_id: string;
+  proyecto_id: number | string;
   confirmacion_mayor_edad?: boolean;
+}
+
+// KIR-102: Estructura de datos de la postulación inicial
+export type PostulacionInicialPayload = CreatePostulantePayload;
+
+export interface PostulacionRegistroResponse {
+  message: string;
+  postulacion_id: number | string;
+  postulante_id: number | string;
+  edad_calculada?: number;
+  etapas_creadas?: number;
 }
 
 export interface ProposeProjectPayload {
@@ -143,7 +155,8 @@ export interface DashboardMetrics {
   totalPostulantes: number;
   postulacionesEnProceso: number;
   postulacionesAprobadas: number;
-  postulacionesReenganche: number;
+  postulacionesReasignacion: number;
+  postulacionesReenganche?: number;
   totalDonacionesBob: number;
   totalDonacionesEspecie: number;
 }
