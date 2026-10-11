@@ -52,7 +52,7 @@ export const useProjectsStore = defineStore('projects', () => {
     }
   }
 
-  async function fetchProjectById(id: string) {
+  async function fetchProjectById(id: number | string) {
     loading.value = true;
     try {
       currentProject.value = await api.getProyectoById(id);
@@ -78,7 +78,7 @@ export const useProjectsStore = defineStore('projects', () => {
   }
 
   async function reviewProject(
-    id: string,
+    id: number | string,
     estado: 'aprobado' | 'rechazado' | 'pendiente_revision',
     motivo_rechazo?: string
   ) {
