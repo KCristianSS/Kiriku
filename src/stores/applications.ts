@@ -46,7 +46,8 @@ export const useApplicationsStore = defineStore('applications', () => {
 
   async function fetchAdminApplications(params?: {
     estado?: string;
-    proyecto_id?: string;
+    proyecto_id?: number | string;
+    reasignacion?: boolean;
     reenganche?: boolean;
     q?: string;
   }) {
@@ -74,7 +75,7 @@ export const useApplicationsStore = defineStore('applications', () => {
   }
 
   async function updateEvaluationStage(
-    etapaId: string,
+    etapaId: number | string,
     payload: {
       estado: 'pendiente' | 'en_curso' | 'aprobada' | 'rechazada';
       comentarios?: string;
@@ -86,7 +87,7 @@ export const useApplicationsStore = defineStore('applications', () => {
       // Update locally in applications
       for (const app of applications.value) {
         if (app.etapas) {
-          const idx = app.etapas.findIndex((e) => e.id === etapaId);
+          const idx = app.etapas.findIndex((e) => String(e.id) === String(etapaId));
           if (idx !== -1) {
             app.etapas[idx] = { ...app.etapas[idx], ...updatedEtapa };
           }
@@ -98,13 +99,13 @@ export const useApplicationsStore = defineStore('applications', () => {
     }
   }
 
-  async function manageReenganche(
-    postulacionId: string,
-    payload: { nuevo_proyecto_id?: string; es_reenganche?: boolean }
+  async function manageReasignacion(
+    postulacionId: number | string,
+    payload: { nuevo_proyecto_id?: number | string; es_reasignacion?: boolean; es_reenganche?: boolean }
   ) {
     try {
-      const updated = await api.manageReenganche(postulacionId, payload);
-      const idx = applications.value.findIndex((a) => a.id === postulacionId);
+      const updated = await api.manageReasignacion(postulacionId, payload);
+      const idx = applications.value.findIndex((a) => String(a.id) === String(postulacionId));
       if (idx !== -1) {
         applications.value[idx] = { ...applications.value[idx], ...updated };
       }
@@ -112,6 +113,13 @@ export const useApplicationsStore = defineStore('applications', () => {
     } catch (err: any) {
       throw err;
     }
+  }
+
+  async function manageReenganche(
+    postulacionId: number | string,
+    payload: { nuevo_proyecto_id?: number | string; es_reenganche?: boolean }
+  ) {
+    return manageReasignacion(postulacionId, payload);
   }
 
   return {
@@ -125,6 +133,7 @@ export const useApplicationsStore = defineStore('applications', () => {
     fetchAdminApplications,
     fetchApplicantsPool,
     updateEvaluationStage,
+    manageReasignacion,
     manageReenganche,
   };
 });
