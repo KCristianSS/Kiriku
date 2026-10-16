@@ -10,6 +10,9 @@ import type {
   ProposeProjectPayload,
   CreateDonationPayload,
   DashboardMetrics,
+  Usuario,
+  CreateUsuarioPayload,
+  UpdateUsuarioPayload,
 } from '../types';
 
 export const apiClient = axios.create({
@@ -168,6 +171,36 @@ export const api = {
   // Métricas
   async getMetrics(): Promise<DashboardMetrics> {
     const res = await apiClient.get<DashboardMetrics>('/metrics');
+    return res.data;
+  },
+
+  // Usuarios
+  async getUsuarios(params?: {
+    rol?: string;
+    activo?: boolean;
+    q?: string;
+  }): Promise<Usuario[]> {
+    const res = await apiClient.get<Usuario[]>('/usuarios', { params });
+    return res.data;
+  },
+
+  async getUsuarioById(id: string): Promise<Usuario> {
+    const res = await apiClient.get<Usuario>(`/usuarios/${id}`);
+    return res.data;
+  },
+
+  async createUsuario(payload: CreateUsuarioPayload): Promise<Usuario> {
+    const res = await apiClient.post<Usuario>('/usuarios', payload);
+    return res.data;
+  },
+
+  async updateUsuario(id: string, payload: UpdateUsuarioPayload): Promise<Usuario> {
+    const res = await apiClient.patch<Usuario>(`/usuarios/${id}`, payload);
+    return res.data;
+  },
+
+  async deleteUsuario(id: string): Promise<{ message: string }> {
+    const res = await apiClient.delete<{ message: string }>(`/usuarios/${id}`);
     return res.data;
   },
 };

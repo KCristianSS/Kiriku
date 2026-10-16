@@ -21,6 +21,25 @@ Toda la información y archivos multimedia se almacenan directamente en PostgreS
 - `postulaciones`: Vinculación de un postulante a un proyecto determinado con estado general.
 - `evaluaciones_etapas`: Registro de las etapas de evaluación por postulación.
 - `donaciones`: Libro de aportes económicos y donaciones en especie.
+- `usuarios`: Sistema de autenticación y autorización (`nombre`, `email`, `password`, `rol`, `activo`).
+
+### Script SQL para crear tabla de usuarios
+
+```sql
+CREATE TABLE usuarios (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  nombre VARCHAR(255) NOT NULL,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  password VARCHAR(255) NOT NULL,
+  rol VARCHAR(50) NOT NULL CHECK (rol IN ('admin', 'coordinador', 'evaluador', 'voluntario')),
+  activo BOOLEAN DEFAULT true,
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Crear índice para búsquedas por email
+CREATE INDEX idx_usuarios_email ON usuarios(email);
+```
 
 ## Estructura de Archivos
 
@@ -38,14 +57,15 @@ Toda la información y archivos multimedia se almacenan directamente en PostgreS
 │   ├── api/
 │   │   └── client.ts             # Cliente Axios configurado para la API
 │   ├── server/
-│   │   ├── api.ts                # Rutas de la API REST (proyectos, postulaciones, imágenes, etc.)
+│   │   ├── api.ts                # Rutas de la API REST (proyectos, postulaciones, usuarios, imágenes, etc.)
 │   │   └── supabase.ts           # Pool de conexión directa a PostgreSQL
 │   ├── types/
 │   │   └── index.ts              # Modelos e interfaces TypeScript
 │   ├── stores/                   # Stores reactivos de Pinia
 │   │   ├── projects.ts           # Gestión de proyectos
 │   │   ├── applications.ts       # Gestión de postulaciones
-│   │   └── donations.ts          # Gestión de donaciones
+│   │   ├── donations.ts          # Gestión de donaciones
+│   │   └── users.ts              # Gestión de usuarios y roles
 │   ├── router/
 │   │   └── index.ts              # Rutas del sistema
 │   ├── components/               # Componentes reutilizables
@@ -62,7 +82,8 @@ Toda la información y archivos multimedia se almacenan directamente en PostgreS
 │       └── admin/
 │           ├── AdminDashboardView.vue # Panel de administración
 │           ├── ProjectReviewView.vue  # Revisión de proyectos
-│           └── ApplicantsPoolView.vue # Banco de postulantes
+│           ├── ApplicantsPoolView.vue # Banco de postulantes
+│           └── UsersManagementView.vue # Gestión de usuarios y roles
 ```
 
 ## Ejecución Local

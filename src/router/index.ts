@@ -7,6 +7,7 @@ import DonationsView from '../views/DonationsView.vue';
 import AdminDashboardView from '../views/admin/AdminDashboardView.vue';
 import ProjectReviewView from '../views/admin/ProjectReviewView.vue';
 import ApplicantsPoolView from '../views/admin/ApplicantsPoolView.vue';
+import UsersManagementView from '../views/admin/UsersManagementView.vue';
 
 const routes = [
   {
@@ -48,6 +49,11 @@ const routes = [
     path: '/admin/postulantes',
     name: 'admin-applicants',
     component: ApplicantsPoolView,
+  },
+  {
+    path: '/admin/usuarios',
+    name: 'admin-users',
+    component: UsersManagementView,
   },
   {
     path: '/:pathMatch(.*)*',
