@@ -83,3 +83,11 @@ Toda la información y archivos multimedia se almacenan directamente en PostgreS
    npm run lint
    npm run build
    ```
+
+## Autenticación y roles administrativos
+
+El panel administrativo usa Supabase Auth. Añade `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` a tu `.env` local (puedes partir de `.env.example`). No publiques ese archivo ni compartas sus valores. La clave `anon` puede usarse en el navegador; nunca pongas una `service_role` en variables `VITE_*`.
+
+Antes del primer uso, crea las cuentas del equipo en **Supabase → Authentication → Users** y aplica `supabase/migrations/202610190001_roles_permissions.sql` desde el SQL Editor. Para habilitar la primera cuenta administradora, cambia el correo de ejemplo en el bloque comentado al final de la migración y ejecútalo después de crear esa cuenta. Luego inicia sesión en `/login` y abre **Panel de Administración → Roles y permisos**.
+
+La migración crea roles base (`administrador`, `evaluador`, `gestor_proyectos`) y permisos para revisión de proyectos, postulaciones, donaciones y gestión de roles. Las rutas administrativas verifican el token y el permiso en el servidor. No hace falta una clave `service_role` para esta implementación; el backend consulta la base de datos usando `DATABASE_URL`.
