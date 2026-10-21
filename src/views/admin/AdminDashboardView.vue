@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LayoutDashboard, ArrowRight, CheckSquare, Users, ShieldCheck } from 'lucide-vue-next';
+import { LayoutDashboard, ArrowRight, CheckSquare, Users, ShieldCheck, UserCog } from 'lucide-vue-next';
 </script>
 
 <template>
@@ -39,6 +39,14 @@ import { LayoutDashboard, ArrowRight, CheckSquare, Users, ShieldCheck } from 'lu
         >
           <Users class="w-4 h-4" />
           <span>Banco de Postulantes</span>
+          <ArrowRight class="w-3.5 h-3.5 opacity-80" />
+        </router-link>
+        <router-link
+          to="/admin/usuarios"
+          class="px-5 py-2.5 bg-[#EB455F] hover:bg-[#C73A52] text-white rounded-xl text-xs font-semibold transition-all inline-flex items-center gap-2 shadow-xs"
+        >
+          <UserCog class="w-4 h-4" />
+          <span>Gestión de Usuarios</span>
           <ArrowRight class="w-3.5 h-3.5 opacity-80" />
         </router-link>
       </div>

@@ -902,7 +902,175 @@ router.get('/metrics', async (req: Request, res: Response) => {
 });
 
 // -------------------------------------------------------------
-// 6. GESTIÓN DE IMÁGENES / ENLACES ALMACENADOS EN BASE DE DATOS
+// 6. GESTIÓN DE USUARIOS Y ROLES
+// -------------------------------------------------------------
+router.get('/usuarios', async (req: Request, res: Response) => {
+  try {
+    const { rol, activo, q } = req.query;
+    let sql = 'SELECT * FROM usuarios WHERE 1=1';
+    const params: any[] = [];
+
+    if (rol) {
+      params.push(rol);
+      sql += ` AND rol = $${params.length}`;
+    }
+
+    if (activo !== undefined) {
+      params.push(activo === 'true');
+      sql += ` AND activo = $${params.length}`;
+    }
+
+    if (q) {
+      params.push(`%${q}%`);
+      sql += ` AND (nombre ILIKE $${params.length} OR email ILIKE $${params.length})`;
+    }
+
+    sql += ' ORDER BY created_at DESC';
+
+    const rows = await query(sql, params);
+    res.json(rows);
+  } catch (err: any) {
+    console.error('Error fetching usuarios:', err);
+    res.status(500).json({ error: 'Error al consultar usuarios' });
+  }
+});
+
+router.get('/usuarios/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const rows = await query('SELECT * FROM usuarios WHERE id = $1', [id]);
+
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    res.json(rows[0]);
+  } catch (err: any) {
+    console.error('Error fetching usuario by id:', err);
+    res.status(500).json({ error: 'Error al obtener usuario' });
+  }
+});
+
+router.post('/usuarios', async (req: Request, res: Response) => {
+  try {
+    const { nombre, email, password, rol } = req.body;
+
+    if (!nombre || !email || !password || !rol) {
+      return res.status(400).json({ error: 'Nombre, email, password y rol son obligatorios' });
+    }
+
+    if (!['admin', 'coordinador', 'evaluador', 'voluntario'].includes(rol)) {
+      return res.status(400).json({ error: 'Rol inválido. Roles válidos: admin, coordinador, evaluador, voluntario' });
+    }
+
+    // Validar formato de email básico
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Formato de email inválido' });
+    }
+
+    // Validar longitud mínima de password
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'El password debe tener al menos 6 caracteres' });
+    }
+
+    const rows = await query(
+      `INSERT INTO usuarios (nombre, email, password, rol, activo)
+       VALUES ($1, $2, $3, $4, true)
+       RETURNING *`,
+      [nombre, email, password, rol]
+    );
+
+    res.status(201).json(rows[0]);
+  } catch (err: any) {
+    console.error('Error creating usuario:', err);
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'El email ya está registrado' });
+    }
+    res.status(500).json({ error: 'Error al registrar usuario' });
+  }
+});
+
+router.patch('/usuarios/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { nombre, email, password, rol, activo } = req.body;
+
+    const updates: string[] = [];
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    if (nombre !== undefined) {
+      updates.push(`nombre = $${paramIndex++}`);
+      params.push(nombre);
+    }
+
+    if (email !== undefined) {
+      updates.push(`email = $${paramIndex++}`);
+      params.push(email);
+    }
+
+    if (password !== undefined) {
+      updates.push(`password = $${paramIndex++}`);
+      params.push(password);
+    }
+
+    if (rol !== undefined) {
+      if (!['admin', 'coordinador', 'evaluador', 'voluntario'].includes(rol)) {
+        return res.status(400).json({ error: 'Rol inválido' });
+      }
+      updates.push(`rol = $${paramIndex++}`);
+      params.push(rol);
+    }
+
+    if (activo !== undefined) {
+      updates.push(`activo = $${paramIndex++}`);
+      params.push(activo);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No se proporcionaron campos para actualizar' });
+    }
+
+    updates.push(`updated_at = NOW()`);
+    params.push(id);
+
+    const sql = `UPDATE usuarios SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`;
+
+    const rows = await query(sql, params);
+
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    res.json(rows[0]);
+  } catch (err: any) {
+    console.error('Error updating usuario:', err);
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'El email ya está registrado' });
+    }
+    res.status(500).json({ error: 'Error al actualizar usuario' });
+  }
+});
+
+router.delete('/usuarios/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const rows = await query('DELETE FROM usuarios WHERE id = $1 RETURNING *', [id]);
+
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    res.json({ message: 'Usuario eliminado correctamente' });
+  } catch (err: any) {
+    console.error('Error deleting usuario:', err);
+    res.status(500).json({ error: 'Error al eliminar usuario' });
+  }
+});
+
+// -------------------------------------------------------------
+// 7. GESTIÓN DE IMÁGENES / ENLACES ALMACENADOS EN BASE DE DATOS
 // -------------------------------------------------------------
 router.get('/imagenes/:clave', async (req: Request, res: Response) => {
   try {

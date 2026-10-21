@@ -147,3 +147,31 @@ export interface DashboardMetrics {
   totalDonacionesBob: number;
   totalDonacionesEspecie: number;
 }
+
+export type UsuarioRol = 'admin' | 'coordinador' | 'evaluador' | 'voluntario';
+
+export interface Usuario {
+  id: string;
+  nombre: string;
+  email: string;
+  password: string;
+  rol: UsuarioRol;
+  activo: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreateUsuarioPayload {
+  nombre: string;
+  email: string;
+  password: string;
+  rol: UsuarioRol;
+}
+
+export interface UpdateUsuarioPayload {
+  nombre?: string;
+  email?: string;
+  password?: string;
+  rol?: UsuarioRol;
+  activo?: boolean;
+}
