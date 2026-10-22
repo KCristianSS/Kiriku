@@ -13,6 +13,8 @@ import {
   Heart,
   TrendingUp,
   RefreshCw,
+  ExternalLink,
+  FileCode,
 } from 'lucide-vue-next';
 
 const metrics = ref<DashboardMetrics | null>(null);
@@ -174,6 +176,34 @@ onMounted(() => {
         </div>
         <ArrowRight class="w-5 h-5 text-stone-400 group-hover:text-[#F58F38] group-hover:translate-x-1 transition-all" />
       </router-link>
+
+      <!-- Swagger Documentation Card -->
+      <a
+        href="/api-docs"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#289EAB] p-6 shadow-xs transition-all flex items-center justify-between group sm:col-span-2"
+      >
+        <div class="flex items-center gap-4">
+          <div class="w-12 h-12 bg-[#E8F6F8] text-[#1E7B85] rounded-xl flex items-center justify-center">
+            <FileCode class="w-6 h-6" />
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="text-base font-bold text-stone-900 group-hover:text-[#1E7B85] transition-colors">
+                Documentación Swagger UI (Colección de Endpoints REST)
+              </h3>
+              <span class="bg-[#E8F6F8] text-[#1E7B85] text-[10px] font-bold px-2 py-0.5 rounded-full border border-[#289EAB]/30">
+                OpenAPI 3.0
+              </span>
+            </div>
+            <p class="text-xs text-stone-500 mt-0.5">
+              Colección completa e interactiva de endpoints para probar: Proyectos, Postulaciones, Validación de Mayoría de Edad, Evaluaciones en 5 etapas, Donaciones y Métricas.
+            </p>
+          </div>
+        </div>
+        <ExternalLink class="w-5 h-5 text-stone-400 group-hover:text-[#1E7B85] transition-all" />
+      </a>
     </div>
   </div>
 </template>

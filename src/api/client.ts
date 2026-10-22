@@ -8,6 +8,8 @@ import type {
   Donacion,
   CreatePostulantePayload,
   PostulacionRegistroResponse,
+  ValidarEdadPayload,
+  ValidarEdadResponse,
   ProposeProjectPayload,
   CreateDonationPayload,
   DashboardMetrics,
@@ -62,6 +64,11 @@ export const api = {
   },
 
   // Postulaciones
+  async validateAge(payload: ValidarEdadPayload): Promise<ValidarEdadResponse> {
+    const res = await apiClient.post<ValidarEdadResponse>('/postulaciones/validar-edad', payload);
+    return res.data;
+  },
+
   async submitApplication(payload: CreatePostulantePayload): Promise<PostulacionRegistroResponse> {
     const res = await apiClient.post<PostulacionRegistroResponse>('/postulaciones', payload);
     return res.data;
