@@ -42,6 +42,9 @@ export const api = {
   async getRoleUsers(q = '') {
     return (await apiClient.get('/roles/users', { params: { q } })).data;
   },
+  async registerRoleUser(payload: { name: string; email: string; role_id: number }) {
+    return (await apiClient.post('/roles/users', payload)).data;
+  },
   async assignRole(userId: string, roleId: number) {
     return (await apiClient.put(`/roles/users/${userId}`, { role_id: roleId })).data;
   },

@@ -12,6 +12,9 @@ const users = ref<RoleUser[]>([]);
 const queryText = ref('');
 const selectedUser = ref('');
 const selectedRole = ref<number | null>(null);
+const newUserName = ref('');
+const newUserEmail = ref('');
+const newUserRole = ref<number | null>(null);
 const editingId = ref<number | null>(null);
 const code = ref('');
 const name = ref('');
@@ -65,6 +68,22 @@ async function assign() {
   catch (e: any) { error.value = e.response?.data?.error || 'No se pudo asignar el rol.'; }
 }
 
+async function registerUser() {
+  if (!newUserName.value.trim() || !newUserEmail.value.trim() || newUserRole.value === null) return;
+  error.value = ''; notice.value = ''; busy.value = true;
+  try {
+    const result = await api.registerRoleUser({
+      name: newUserName.value.trim(),
+      email: newUserEmail.value.trim(),
+      role_id: newUserRole.value,
+    });
+    notice.value = result.message || 'Usuario registrado y rol asignado.';
+    newUserName.value = ''; newUserEmail.value = ''; newUserRole.value = null;
+    await load();
+  } catch (e: any) { error.value = e.response?.data?.error || 'No se pudo registrar el usuario.'; }
+  finally { busy.value = false; }
+}
+
 onMounted(load);
 </script>
 
@@ -94,8 +113,18 @@ onMounted(load);
       </section>
     </section>
 
+    <section class="rounded-2xl border border-stone-200 bg-white p-6">
+      <div class="mb-5"><h2 class="text-xl font-semibold">Registrar usuario del sistema</h2><p class="mt-1 text-sm text-stone-600">Se enviará una invitación al correo y el rol quedará asignado al completar el registro.</p></div>
+      <form @submit.prevent="registerUser" class="grid gap-4 sm:grid-cols-2">
+        <label class="block text-sm font-medium">Nombre completo<input v-model="newUserName" required minlength="2" maxlength="100" autocomplete="name" class="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2" /></label>
+        <label class="block text-sm font-medium">Correo electrónico<input v-model="newUserEmail" required type="email" autocomplete="email" class="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2" /></label>
+        <label class="block text-sm font-medium">Rol<select v-model.number="newUserRole" required class="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2"><option :value="null" disabled>Selecciona un rol</option><option v-for="role in roles.filter((entry) => entry.active)" :key="role.id" :value="role.id">{{ role.name }}</option></select></label>
+        <div class="flex items-end"><button :disabled="busy || newUserRole === null" class="rounded-lg bg-[#289EAB] px-4 py-2 font-semibold text-white disabled:opacity-50">{{ busy ? 'Registrando…' : 'Registrar e invitar' }}</button></div>
+      </form>
+    </section>
+
     <section class="rounded-2xl border border-stone-200 bg-white p-6 space-y-4">
-      <div><h2 class="text-xl font-semibold">Asignar rol a una cuenta</h2><p class="mt-1 text-sm text-stone-600">Busca una cuenta existente por correo. Las cuentas nuevas se crean desde Supabase Auth.</p></div>
+      <div><h2 class="text-xl font-semibold">Cambiar el rol de una cuenta</h2><p class="mt-1 text-sm text-stone-600">Busca una cuenta existente por correo y asígnale otro rol.</p></div>
       <form @submit.prevent="load" class="flex flex-wrap gap-2"><input v-model="queryText" type="search" placeholder="Buscar por correo" class="min-w-56 flex-1 rounded-lg border border-stone-300 px-3 py-2" /><button class="rounded-lg border border-stone-300 px-4 py-2">Buscar</button></form>
       <div class="grid gap-3 sm:grid-cols-[1fr_1fr_auto]"><select v-model="selectedUser" class="rounded-lg border border-stone-300 px-3 py-2"><option value="">Selecciona una cuenta</option><option v-for="user in users" :key="user.id" :value="user.id">{{ user.email }}</option></select><select v-model.number="selectedRole" class="rounded-lg border border-stone-300 px-3 py-2"><option :value="null">Selecciona un rol</option><option v-for="role in roles.filter((entry) => entry.active)" :key="role.id" :value="role.id">{{ role.name }}</option></select><button @click="assign" :disabled="!selectedUser || selectedRole === null" class="rounded-lg bg-stone-800 px-4 py-2 font-semibold text-white disabled:opacity-50">Asignar</button></div>
       <div class="divide-y divide-stone-100"><div v-for="user in users" :key="user.id" class="flex flex-wrap justify-between gap-2 py-2 text-sm"><span>{{ user.email }}</span><span class="text-stone-500">{{ user.roles.map((role) => role.name).join(', ') || 'Sin rol' }}</span></div></div>
