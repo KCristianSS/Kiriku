@@ -1,5 +1,5 @@
 import express, { Request, Response, Router } from 'express';
-import { query } from './supabase';
+import { query, supabaseAdmin } from './supabase';
 import { authenticate, requirePermission } from './authorization';
 
 const router: Router = express.Router();
@@ -929,6 +929,50 @@ router.get('/roles/users', authenticate, requirePermission('users.manage_roles')
   } catch (error) {
     console.error('Error obteniendo usuarios:', error);
     res.status(500).json({ error: 'No se pudieron obtener los usuarios de Supabase Auth' });
+  }
+});
+
+router.post('/roles/users', authenticate, requirePermission('users.manage_roles'), async (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const roleId = Number(req.body?.role_id);
+  if (name.length < 2 || name.length > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !Number.isInteger(roleId) || roleId < 1) {
+    return res.status(400).json({ error: 'Nombre, correo válido y rol son obligatorios' });
+  }
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Configura SUPABASE_SERVICE_ROLE_KEY en el servidor para registrar usuarios' });
+  }
+  try {
+    const roles = await query('SELECT id FROM roles WHERE id = $1 AND active = TRUE', [roleId]);
+    if (!roles.length) return res.status(400).json({ error: 'Selecciona un rol activo' });
+
+    const { data, error } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+      data: { full_name: name },
+    });
+    if (error) {
+      const status = /already|registered|exists/i.test(error.message) ? 409 : 400;
+      return res.status(status).json({ error: status === 409 ? 'Ya existe una cuenta con ese correo' : 'No se pudo enviar la invitación a Supabase Auth' });
+    }
+    if (!data.user) return res.status(502).json({ error: 'Supabase no devolvió el usuario creado' });
+
+    try {
+      await query(
+        'INSERT INTO user_roles (user_id, role_id, assigned_by) VALUES ($1, $2, $3)',
+        [data.user.id, roleId, (req as any).userId]
+      );
+    } catch (error) {
+      await supabaseAdmin.auth.admin.deleteUser(data.user.id);
+      throw error;
+    }
+
+    res.status(201).json({
+      id: data.user.id,
+      email: data.user.email,
+      message: 'Usuario registrado. Supabase Auth enviará un correo para completar la invitación.',
+    });
+  } catch (error) {
+    console.error('Error registrando usuario:', error);
+    res.status(500).json({ error: 'No se pudo registrar el usuario' });
   }
 });
 

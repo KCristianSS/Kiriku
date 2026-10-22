@@ -7,6 +7,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY =
   process.env.SUPABASE_ANON_KEY ||
   process.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 // -------------------------------------------------------------
 // VALIDACIÓN ESTRICTA DEL ARCHIVO .ENV
@@ -36,6 +37,13 @@ export const supabase = createClient(
     },
   }
 );
+
+// This privileged client is server-only and is required only for administrator invitations.
+export const supabaseAdmin = SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    })
+  : null;
 
 export const dbPool = new Pool({
   connectionString: DATABASE_URL,
