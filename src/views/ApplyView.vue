@@ -3,7 +3,9 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useProjectsStore } from '../stores/projects';
 import { useApplicationsStore } from '../stores/applications';
-import type { CreatePostulantePayload, Proyecto } from '../types';
+import { api } from '../api/client';
+import AdultWarningModal from '../components/AdultWarningModal.vue';
+import type { CreatePostulantePayload, Proyecto, ValidarEdadResponse } from '../types';
 import {
   UserCheck,
   Building2,
@@ -15,12 +17,13 @@ import {
   AlertCircle,
   ArrowRight,
   ArrowLeft,
-  Search,
   Sparkles,
   ClipboardList,
   HeartHandshake,
   Check,
   ExternalLink,
+  Info,
+  AlertTriangle,
 } from 'lucide-vue-next';
 
 const route = useRoute();
@@ -47,15 +50,20 @@ const form = ref<CreatePostulantePayload>({
 const selectedProject = ref<Proyecto | null>(null);
 const submissionSuccess = ref(false);
 const successData = ref<{
-  postulacion_id: string;
-  postulante_id: string;
+  postulacion_id: number | string;
+  postulante_id: number | string;
   edad_calculada?: number;
   etapas_creadas?: number;
 } | null>(null);
 const localError = ref<string | null>(null);
 const isSubmitting = ref(false);
+const showAdultModal = ref(false);
 
-// Calculate age from birth date
+// Server-side age validation status (KIR-99)
+const isValidatingAge = ref(false);
+const ageValidationResult = ref<ValidarEdadResponse | null>(null);
+
+// Calculate age from birth date locally in real time
 const calculatedAge = computed<number | null>(() => {
   if (!form.value.fecha_nacimiento) return null;
   const birth = new Date(form.value.fecha_nacimiento);
@@ -93,11 +101,61 @@ const availableProjects = computed(() => {
   return projectsStore.projects.filter((p) => p.estado === 'aprobado');
 });
 
+// Asynchronously validate age against the backend API (KIR-99)
+async function triggerServerAgeValidation() {
+  if (!form.value.proyecto_id || !form.value.fecha_nacimiento) {
+    ageValidationResult.value = null;
+    return;
+  }
+  isValidatingAge.value = true;
+  try {
+    const res = await api.validateAge({
+      proyecto_id: form.value.proyecto_id,
+      fecha_nacimiento: form.value.fecha_nacimiento,
+    });
+    ageValidationResult.value = res;
+  } catch (err) {
+    console.warn('Pre-validation check fallback to local calculation:', err);
+  } finally {
+    isValidatingAge.value = false;
+  }
+}
+
+// Watch birthdate changes to trigger real-time validation
+watch(
+  () => form.value.fecha_nacimiento,
+  () => {
+    if (form.value.fecha_nacimiento) {
+      triggerServerAgeValidation();
+    } else {
+      ageValidationResult.value = null;
+    }
+  }
+);
+
 // Select a project
 function selectProject(proj: Proyecto) {
   selectedProject.value = proj;
   form.value.proyecto_id = proj.id;
   localError.value = null;
+
+  // If project requires +18, open the adult warning modal automatically for awareness
+  if (proj.es_mayor_edad && !form.value.confirmacion_mayor_edad) {
+    showAdultModal.value = true;
+  }
+
+  if (form.value.fecha_nacimiento) {
+    triggerServerAgeValidation();
+  }
+}
+
+// Handle adult warning modal confirmation (KIR-98 / KIR-100)
+function handleModalConfirm(payload?: { confirmedDate?: string }) {
+  showAdultModal.value = false;
+  form.value.confirmacion_mayor_edad = true;
+  if (payload?.confirmedDate && !form.value.fecha_nacimiento) {
+    form.value.fecha_nacimiento = payload.confirmedDate;
+  }
 }
 
 // Watch for route param changes
@@ -136,6 +194,12 @@ onMounted(async () => {
   if (projectsStore.projects.length === 0) {
     await projectsStore.fetchProjects('aprobado');
   }
+
+  // Prepopulate birthdate if passed from query
+  if (route.query.fecha && typeof route.query.fecha === 'string') {
+    form.value.fecha_nacimiento = route.query.fecha;
+  }
+
   if (route.params.id) {
     const projId = route.params.id as string;
     form.value.proyecto_id = projId;
@@ -149,6 +213,10 @@ onMounted(async () => {
       }
     }
   }
+
+  if (form.value.fecha_nacimiento && form.value.proyecto_id) {
+    triggerServerAgeValidation();
+  }
 });
 
 // Submit application to Supabase
@@ -156,8 +224,30 @@ async function handleSubmit() {
   localError.value = null;
 
   if (!isFormValid.value) {
-    localError.value = 'Por favor complete todos los campos obligatorios y verifique los requisitos.';
+    if (isUnderageForProject.value) {
+      localError.value = `Este proyecto requiere ser mayor de edad (+18 años). Tu edad actual calculada es de ${calculatedAge.value} años. No es posible enviar la postulación.`;
+    } else if (selectedProject.value?.es_mayor_edad && !form.value.confirmacion_mayor_edad) {
+      localError.value = 'Debes aceptar la declaración jurada obligatoria de mayoría de edad.';
+    } else {
+      localError.value = 'Por favor completa todos los campos obligatorios antes de continuar.';
+    }
     return;
+  }
+
+  // Strict pre-submission server check (KIR-99)
+  if (selectedProject.value?.es_mayor_edad) {
+    try {
+      const validation = await api.validateAge({
+        proyecto_id: form.value.proyecto_id,
+        fecha_nacimiento: form.value.fecha_nacimiento,
+      });
+      if (!validation.es_elegible) {
+        localError.value = validation.mensaje;
+        return;
+      }
+    } catch (e: any) {
+      console.warn('Backend age pre-check failed, proceeding to form submit verification:', e);
+    }
   }
 
   isSubmitting.value = true;
@@ -182,6 +272,7 @@ async function handleSubmit() {
 function handleReset() {
   submissionSuccess.value = false;
   successData.value = null;
+  ageValidationResult.value = null;
   form.value = {
     nombres: '',
     apellidos: '',
@@ -219,7 +310,7 @@ function goToTracking() {
       </button>
 
       <span class="text-xs text-stone-500 font-medium">
-        Historia de Usuario: <strong class="text-stone-700">KIR-102 a KIR-105</strong>
+        Historia: <strong class="text-stone-700">KIR-17: Validar Mayoría de Edad</strong>
       </span>
     </div>
 
@@ -262,8 +353,12 @@ function goToTracking() {
           <span class="font-mono text-stone-800">{{ form.email }}</span>
         </div>
         <div class="flex items-center justify-between text-xs">
+          <span class="text-stone-500">Edad Validada:</span>
+          <span class="font-mono font-semibold text-emerald-700">{{ calculatedAge }} años (Mayor de edad cumplida)</span>
+        </div>
+        <div class="flex items-center justify-between text-xs">
           <span class="text-stone-500">ID de Postulación en BD:</span>
-          <span class="font-mono text-xs text-[#289EAB] truncate max-w-[180px]">{{ successData?.postulacion_id }}</span>
+          <span class="font-mono text-xs text-[#289EAB] font-bold">{{ successData?.postulacion_id }}</span>
         </div>
         <div class="flex items-center justify-between text-xs pt-2 border-t border-stone-200">
           <span class="text-stone-500">Etapas Inicializadas:</span>
@@ -293,7 +388,7 @@ function goToTracking() {
       </div>
     </div>
 
-    <!-- Application Form View (KIR-104) -->
+    <!-- Application Form View (KIR-100) -->
     <div v-else class="space-y-8">
       <!-- Header Banner -->
       <div class="relative bg-white border border-stone-200 rounded-3xl p-6 sm:p-8 shadow-xs overflow-hidden">
@@ -307,13 +402,13 @@ function goToTracking() {
             <div>
               <div class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#E8F6F8] text-[#1E7B85] text-xs font-semibold mb-1">
                 <Sparkles class="w-3.5 h-3.5 text-[#F58F38]" />
-                <span>KIR-104: Formulario de Vinculación y Postulación</span>
+                <span>KIR-17: Validación de Mayoría de Edad</span>
               </div>
               <h1 class="text-2xl sm:text-3xl font-extrabold text-stone-900 tracking-tight">
-                Registrar Postulación Inicial
+                Registrar Postulación
               </h1>
               <p class="text-stone-600 text-xs sm:text-sm mt-1">
-                Completa tus datos personales y vincúlate a un proyecto comunitario de Kirikú.
+                Completa tus datos y verifica los requisitos legales y de edad para participar en Kirikú.
               </p>
             </div>
           </div>
@@ -334,18 +429,25 @@ function goToTracking() {
         <div v-if="selectedProject" class="bg-gradient-to-br from-stone-50 to-[#E8F6F8]/30 rounded-2xl p-5 border border-stone-200 relative">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <div class="flex items-center gap-2 mb-1.5">
+              <div class="flex flex-wrap items-center gap-2 mb-2">
                 <span class="inline-flex items-center gap-1 text-xs font-semibold text-[#1E7B85] bg-[#E8F6F8] px-2.5 py-0.5 rounded-md">
                   <Building2 class="w-3.5 h-3.5" />
                   {{ selectedProject.organizacion?.nombre || 'Organización Aliada' }}
                 </span>
 
+                <!-- Badge +18 with button to view full legal notice (KIR-98) -->
                 <span
                   v-if="selectedProject.es_mayor_edad"
-                  class="inline-flex items-center gap-1 text-xs font-semibold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-md"
+                  class="inline-flex items-center gap-1 text-xs font-bold bg-amber-100 text-amber-900 px-2.5 py-0.5 rounded-md border border-amber-200"
                 >
-                  <ShieldAlert class="w-3.5 h-3.5" />
-                  Mayoría de Edad (+18)
+                  <ShieldAlert class="w-3.5 h-3.5 text-amber-700" />
+                  Mayoría de Edad (+18) Requerida
+                </span>
+                <span
+                  v-else
+                  class="inline-flex items-center gap-1 text-xs font-semibold bg-blue-100 text-blue-800 px-2.5 py-0.5 rounded-md"
+                >
+                  Convocatoria Abierta (Sin restricción de edad)
                 </span>
               </div>
 
@@ -368,14 +470,26 @@ function goToTracking() {
               </div>
             </div>
 
-            <!-- Change project button -->
-            <button
-              type="button"
-              @click="selectedProject = null; form.proyecto_id = ''"
-              class="self-start sm:self-center px-3.5 py-2 text-xs font-semibold text-[#289EAB] hover:text-[#1E7B85] bg-white border border-[#289EAB]/30 rounded-xl hover:bg-[#E8F6F8] transition-colors cursor-pointer shrink-0"
-            >
-              Cambiar Proyecto
-            </button>
+            <!-- Action buttons: Change project & View Adult Legal Notice -->
+            <div class="flex flex-row sm:flex-col items-center sm:items-end gap-2 shrink-0">
+              <button
+                v-if="selectedProject.es_mayor_edad"
+                type="button"
+                @click="showAdultModal = true"
+                class="px-3.5 py-2 text-xs font-semibold text-amber-800 hover:text-amber-900 bg-amber-50 border border-amber-300 rounded-xl hover:bg-amber-100 transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <ShieldAlert class="w-3.5 h-3.5 text-amber-700" />
+                <span>Ver Aviso Legal (+18)</span>
+              </button>
+
+              <button
+                type="button"
+                @click="selectedProject = null; form.proyecto_id = ''"
+                class="px-3.5 py-2 text-xs font-semibold text-[#289EAB] hover:text-[#1E7B85] bg-white border border-[#289EAB]/30 rounded-xl hover:bg-[#E8F6F8] transition-colors cursor-pointer"
+              >
+                Cambiar Proyecto
+              </button>
+            </div>
           </div>
         </div>
 
@@ -403,8 +517,18 @@ function goToTracking() {
               <div>
                 <div class="flex items-center justify-between text-xs text-stone-500 mb-1">
                   <span class="font-medium text-[#1E7B85] truncate">{{ p.organizacion?.nombre || 'Kirikú' }}</span>
-                  <span v-if="p.es_mayor_edad" class="bg-amber-100 text-amber-800 text-[10px] font-bold px-1.5 py-0.5 rounded">
-                    +18
+                  <span
+                    v-if="p.es_mayor_edad"
+                    class="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1"
+                  >
+                    <ShieldAlert class="w-3 h-3 text-amber-700" />
+                    +18 Años
+                  </span>
+                  <span
+                    v-else
+                    class="bg-blue-50 text-blue-700 text-[10px] font-semibold px-1.5 py-0.5 rounded"
+                  >
+                    Sin restricción
                   </span>
                 </div>
                 <h4 class="text-sm font-bold text-stone-900 group-hover:text-[#289EAB] transition-colors mb-1 line-clamp-1">
@@ -425,15 +549,15 @@ function goToTracking() {
         </div>
       </div>
 
-      <!-- SECTION 2: Datos Personales del Postulante -->
+      <!-- SECTION 2: Datos Personales del Postulante & Validación de Edad (KIR-99 & KIR-100) -->
       <form @submit.prevent="handleSubmit" class="space-y-8">
         <div class="bg-white rounded-3xl border border-stone-200 p-6 sm:p-8 shadow-xs space-y-6">
           <div class="flex items-center justify-between border-b border-stone-100 pb-4">
             <div class="flex items-center gap-2">
               <UserCheck class="w-5 h-5 text-[#F58F38]" />
-              <h2 class="text-lg font-bold text-stone-900">2. Datos Personales del Postulante</h2>
+              <h2 class="text-lg font-bold text-stone-900">2. Datos Personales y Verificación de Edad</h2>
             </div>
-            <span class="text-xs text-stone-500 font-medium">Tabla: <code class="font-mono text-stone-700">postulantes</code></span>
+            <span class="text-xs text-stone-500 font-medium">Validación en tiempo real</span>
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
@@ -480,7 +604,7 @@ function goToTracking() {
                 placeholder="Ej. 8492019 LP"
                 class="w-full px-4 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-[#289EAB] focus:bg-white font-mono transition-all"
               />
-              <p class="text-[11px] text-stone-500 mt-1">Con este documento podrás consultar tu seguimiento en vivo.</p>
+              <p class="text-[11px] text-stone-500 mt-1">Se contrastará con tu fecha de nacimiento en la Etapa 1.</p>
             </div>
 
             <!-- Correo Electrónico -->
@@ -512,11 +636,18 @@ function goToTracking() {
               />
             </div>
 
-            <!-- Fecha de Nacimiento -->
+            <!-- Fecha de Nacimiento (KIR-99: Core Age Pre-validation) -->
             <div>
-              <label for="fecha_nacimiento" class="block text-xs font-bold text-stone-700 uppercase tracking-wider mb-1.5">
-                Fecha de Nacimiento <span class="text-rose-500">*</span>
-              </label>
+              <div class="flex items-center justify-between mb-1.5">
+                <label for="fecha_nacimiento" class="block text-xs font-bold text-stone-700 uppercase tracking-wider">
+                  Fecha de Nacimiento <span class="text-rose-500">*</span>
+                </label>
+                <span v-if="isValidatingAge" class="text-[11px] text-[#289EAB] flex items-center gap-1 font-medium">
+                  <span class="inline-block w-2 h-2 rounded-full bg-[#289EAB] animate-ping"></span>
+                  Validando...
+                </span>
+              </div>
+
               <input
                 id="fecha_nacimiento"
                 v-model="form.fecha_nacimiento"
@@ -525,22 +656,52 @@ function goToTracking() {
                 class="w-full px-4 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm text-stone-900 focus:outline-none focus:ring-2 focus:ring-[#289EAB] focus:bg-white font-mono transition-all"
               />
 
-              <!-- Dynamic Age & +18 Validation Feedback -->
-              <div v-if="calculatedAge !== null" class="mt-2">
-                <span
+              <!-- Dynamic Real-Time Age Validation Feedback (KIR-99 & KIR-100) -->
+              <div v-if="calculatedAge !== null" class="mt-3">
+                <!-- Case A: Underage volunteer on a +18 project (BLOCKING) -->
+                <div
                   v-if="isUnderageForProject"
-                  class="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-700 bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200"
+                  class="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs space-y-1.5"
                 >
-                  <AlertCircle class="w-3.5 h-3.5 shrink-0" />
-                  Edad: {{ calculatedAge }} años (Este proyecto requiere 18 años o más).
-                </span>
-                <span
+                  <div class="flex items-center gap-2 font-bold text-rose-900">
+                    <ShieldAlert class="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>Bloqueo por Minoría de Edad: {{ calculatedAge }} años</span>
+                  </div>
+                  <p class="leading-relaxed text-rose-700">
+                    Este proyecto exige contar con <strong>18 años o más</strong> para actividades de campo y cobertura legal. No cumples con el requisito mínimo para postular a esta convocatoria.
+                  </p>
+                  <div class="pt-1">
+                    <button
+                      type="button"
+                      @click="selectedProject = null; form.proyecto_id = ''"
+                      class="text-xs font-bold text-rose-800 underline hover:text-rose-950 cursor-pointer"
+                    >
+                      Elegir un proyecto sin restricción de edad &rarr;
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Case B: Age >= 18 on a +18 project (ELIGIBLE) -->
+                <div
+                  v-else-if="selectedProject?.es_mayor_edad"
+                  class="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2 font-medium"
+                >
+                  <CheckCircle2 class="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    <strong>Edad verificada:</strong> Tienes {{ calculatedAge }} años. Cumples con el requisito legal de mayoría de edad para este proyecto.
+                  </span>
+                </div>
+
+                <!-- Case C: Project without +18 restriction -->
+                <div
                   v-else
-                  class="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200"
+                  class="p-3 rounded-xl bg-blue-50 border border-blue-200 text-blue-800 text-xs flex items-center gap-2 font-medium"
                 >
-                  <Check class="w-3.5 h-3.5 shrink-0 text-emerald-600" />
-                  Edad calculada: {{ calculatedAge }} años (Requisito cumplido).
-                </span>
+                  <Info class="w-4 h-4 text-blue-600 shrink-0" />
+                  <span>
+                    Edad calculada: <strong>{{ calculatedAge }} años</strong>. Este proyecto no tiene restricción de mayoría de edad.
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -601,29 +762,72 @@ function goToTracking() {
           </div>
         </div>
 
-        <!-- SECTION 4: Requisito de Mayoría de Edad (Si aplica al proyecto) -->
+        <!-- SECTION 4: Requisito de Mayoría de Edad (Si aplica al proyecto) (KIR-98 & KIR-100) -->
         <div
           v-if="selectedProject?.es_mayor_edad"
-          class="bg-amber-50/70 rounded-3xl border border-amber-200 p-6 sm:p-8 space-y-4"
+          :class="[
+            'rounded-3xl border p-6 sm:p-8 space-y-4 transition-all',
+            isUnderageForProject
+              ? 'bg-rose-50/70 border-rose-200 opacity-60'
+              : form.confirmacion_mayor_edad
+              ? 'bg-emerald-50/50 border-emerald-300'
+              : 'bg-amber-50/70 border-amber-200'
+          ]"
         >
-          <div class="flex items-center gap-2.5 text-amber-900">
-            <ShieldAlert class="w-5 h-5 text-amber-600 shrink-0" />
-            <h3 class="font-bold text-sm sm:text-base">Declaración Obligatoria de Mayoría de Edad (+18)</h3>
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2.5">
+              <ShieldAlert
+                :class="[
+                  'w-5 h-5 shrink-0',
+                  isUnderageForProject
+                    ? 'text-rose-600'
+                    : form.confirmacion_mayor_edad
+                    ? 'text-emerald-700'
+                    : 'text-amber-600'
+                ]"
+              />
+              <h3 class="font-bold text-sm sm:text-base text-stone-900">
+                Declaración Obligatoria de Mayoría de Edad (+18)
+              </h3>
+            </div>
+
+            <button
+              type="button"
+              @click="showAdultModal = true"
+              class="text-xs font-semibold text-amber-800 underline hover:text-amber-950 cursor-pointer shrink-0"
+            >
+              Leer condiciones completas
+            </button>
           </div>
 
-          <p class="text-xs text-amber-800 leading-relaxed">
-            Las actividades de este proyecto implican trabajo en terreno y requieren obligatoriamente tener 18 años cumplidos al momento del inicio.
+          <p class="text-xs text-stone-700 leading-relaxed">
+            Las actividades de este proyecto implican trabajo en terreno y requieren obligatoriamente tener 18 años cumplidos al momento del inicio. El documento de identidad será requerido en la primera etapa de evaluación.
           </p>
 
-          <label class="flex items-start gap-3 cursor-pointer pt-2">
+          <label
+            :class="[
+              'flex items-start gap-3 pt-2 cursor-pointer p-3 rounded-xl border transition-all',
+              isUnderageForProject
+                ? 'cursor-not-allowed bg-stone-100 border-stone-200'
+                : form.confirmacion_mayor_edad
+                ? 'bg-white border-emerald-300 text-emerald-950 shadow-xs'
+                : 'bg-white/80 border-amber-200 text-stone-800'
+            ]"
+          >
             <input
               type="checkbox"
               v-model="form.confirmacion_mayor_edad"
-              class="w-4 h-4 text-[#289EAB] border-stone-300 rounded-sm focus:ring-[#289EAB] mt-0.5 cursor-pointer"
+              :disabled="isUnderageForProject"
+              class="w-4 h-4 text-[#289EAB] border-stone-300 rounded-sm focus:ring-[#289EAB] mt-0.5 cursor-pointer disabled:cursor-not-allowed"
             />
-            <span class="text-xs font-medium text-stone-800">
-              Certifico que tengo 18 años o más y acepto presentar mi documento de identidad en la verificación inicial.
-            </span>
+            <div class="text-xs font-medium leading-relaxed">
+              <span>
+                Certifico que tengo 18 años o más y acepto presentar mi documento de identidad en la verificación inicial.
+              </span>
+              <span v-if="!form.confirmacion_mayor_edad && !isUnderageForProject" class="block text-[11px] text-amber-700 font-semibold mt-0.5">
+                * Casilla obligatoria para poder enviar la postulación.
+              </span>
+            </div>
           </label>
         </div>
 
@@ -634,7 +838,7 @@ function goToTracking() {
         >
           <AlertCircle class="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
           <div>
-            <strong class="font-semibold block mb-0.5">No se pudo procesar la postulación:</strong>
+            <strong class="font-semibold block mb-0.5">Validación de Postulación:</strong>
             <span>{{ localError }}</span>
           </div>
         </div>
@@ -643,7 +847,7 @@ function goToTracking() {
         <div class="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
           <div class="text-xs text-stone-500">
             <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1.5"></span>
-            Los datos se almacenarán directamente en la base de datos de <strong>Supabase</strong>.
+            Los datos se validan y almacenan directamente en <strong>Supabase</strong>.
           </div>
 
           <button
@@ -656,12 +860,23 @@ function goToTracking() {
                 : 'bg-stone-200 text-stone-400 cursor-not-allowed shadow-none'
             ]"
           >
-            <span v-if="isSubmitting">Guardando en Supabase...</span>
+            <span v-if="isSubmitting">Validando y Guardando en Supabase...</span>
             <span v-else>Enviar Postulación Inicial</span>
             <ArrowRight v-if="!isSubmitting" class="w-4 h-4" />
           </button>
         </div>
       </form>
     </div>
+
+    <!-- Adult Warning Modal Component (KIR-98 & KIR-100) -->
+    <AdultWarningModal
+      :is-open="showAdultModal"
+      :project-title="selectedProject?.titulo"
+      :project-location="selectedProject?.ubicacion"
+      :project-org="selectedProject?.organizacion?.nombre || 'Iniciativa Kirikú'"
+      :initial-birth-date="form.fecha_nacimiento"
+      @confirm="handleModalConfirm"
+      @close="showAdultModal = false"
+    />
   </div>
 </template>

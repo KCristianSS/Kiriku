@@ -119,6 +119,23 @@ export interface PostulacionRegistroResponse {
   etapas_creadas?: number;
 }
 
+// KIR-99: Validación previa a la postulación
+export interface ValidarEdadPayload {
+  proyecto_id: number | string;
+  fecha_nacimiento: string;
+}
+
+export interface ValidarEdadResponse {
+  proyecto_id: number | string;
+  proyecto_titulo: string;
+  es_mayor_edad_requerido: boolean;
+  fecha_nacimiento: string;
+  edad_calculada: number;
+  es_mayor_edad: boolean;
+  es_elegible: boolean;
+  mensaje: string;
+}
+
 export interface ProposeProjectPayload {
   titulo: string;
   descripcion: string;
