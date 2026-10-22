@@ -253,6 +253,46 @@ router.patch('/proyectos/:id/revision', async (req: Request, res: Response) => {
 // -------------------------------------------------------------
 // 3. POSTULACIONES Y EVALUACIÓN EN 5 ETAPAS
 // -------------------------------------------------------------
+
+// KIR-99: Validación previa a la postulación (Verificación de mayoría de edad)
+router.post('/postulaciones/validar-edad', async (req: Request, res: Response) => {
+  try {
+    const { proyecto_id, fecha_nacimiento } = req.body;
+
+    if (!proyecto_id || !fecha_nacimiento) {
+      return res.status(400).json({ error: 'proyecto_id y fecha_nacimiento son obligatorios para validar' });
+    }
+
+    const proyRows = await query('SELECT id, titulo, es_mayor_edad, ubicacion FROM proyectos WHERE id = $1', [proyecto_id]);
+    if (!proyRows.length) {
+      return res.status(404).json({ error: 'El proyecto seleccionado no existe' });
+    }
+
+    const proyecto = proyRows[0];
+    const edad = calculateAge(fecha_nacimiento);
+    const esMayor = edad >= 18;
+    const esElegible = !proyecto.es_mayor_edad || esMayor;
+
+    res.json({
+      proyecto_id: proyecto.id,
+      proyecto_titulo: proyecto.titulo,
+      es_mayor_edad_requerido: proyecto.es_mayor_edad,
+      fecha_nacimiento,
+      edad_calculada: edad,
+      es_mayor_edad: esMayor,
+      es_elegible: esElegible,
+      mensaje: !esElegible
+        ? `Este proyecto requiere ser mayor de edad (+18 años). Tu edad calculada es de ${edad} años.`
+        : proyecto.es_mayor_edad
+        ? `Cumples con el requisito de mayoría de edad (${edad} años).`
+        : `Este proyecto no tiene restricción de mayoría de edad.`
+    });
+  } catch (err: any) {
+    console.error('Error validating age before application:', err);
+    res.status(500).json({ error: 'Error al validar mayoría de edad' });
+  }
+});
+
 router.post('/postulaciones', async (req: Request, res: Response) => {
   try {
     const {
@@ -284,12 +324,16 @@ router.post('/postulaciones', async (req: Request, res: Response) => {
     if (proyecto.es_mayor_edad && edad < 18) {
       return res.status(400).json({
         error: `Este proyecto requiere ser mayor de edad (+18 años). Edad calculada: ${edad} años.`,
+        edad_calculada: edad,
+        requerimiento_cumplido: false,
+        es_mayor_edad_requerido: true,
       });
     }
 
     if (proyecto.es_mayor_edad && !confirmacion_mayor_edad) {
       return res.status(400).json({
         error: 'Debe aceptar la declaración obligatoria de mayoría de edad.',
+        requiere_declaracion_jurada: true,
       });
     }
 

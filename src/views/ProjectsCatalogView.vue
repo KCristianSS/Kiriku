@@ -71,10 +71,13 @@ function handleApply(project: Proyecto) {
 }
 
 // Confirm adult modal and proceed to application form
-function handleConfirmAdult() {
+function handleConfirmAdult(payload?: { confirmedDate?: string }) {
   isModalOpen.value = false;
   if (modalProject.value) {
-    router.push(`/postular/${modalProject.value.id}`);
+    router.push({
+      path: `/postular/${modalProject.value.id}`,
+      query: payload?.confirmedDate ? { fecha: payload.confirmedDate } : undefined,
+    });
   }
 }
 </script>
@@ -182,6 +185,8 @@ function handleConfirmAdult() {
     <AdultWarningModal
       :is-open="isModalOpen"
       :project-title="modalProject?.titulo"
+      :project-location="modalProject?.ubicacion"
+      :project-org="modalProject?.organizacion?.nombre || 'Iniciativa Kirikú'"
       @confirm="handleConfirmAdult"
       @close="isModalOpen = false"
     />
