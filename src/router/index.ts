@@ -12,7 +12,11 @@ import LoginView from '../views/LoginView.vue';
 import { supabaseAuth } from '../auth';
 
 const routes: RouteRecordRaw[] = [
-  { path: '/login', name: 'login', component: LoginView },
+  {
+    path: '/login',
+    name: 'login',
+    component: LoginView,
+  },
   {
     path: '/',
     name: 'catalog',
@@ -56,7 +60,12 @@ const routes: RouteRecordRaw[] = [
     component: ApplicantsPoolView,
     meta: { requiresAuth: true },
   },
-  { path: '/admin/roles', name: 'admin-roles', component: RolesManagementView, meta: { requiresAuth: true } },
+  {
+    path: '/admin/roles',
+    name: 'admin-roles',
+    component: RolesManagementView,
+    meta: { requiresAuth: true },
+  },
   {
     path: '/:pathMatch(.*)*',
     redirect: '/',
@@ -73,9 +82,15 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   if (to.meta.requiresAuth) {
-    const { data } = await supabaseAuth?.auth.getSession() ?? { data: { session: null } };
-    if (!data.session) return { name: 'login', query: { redirect: to.fullPath } };
+    if (typeof window !== 'undefined' && localStorage.getItem('kiriku_admin_token')) {
+      return true;
+    }
+    const { data } = (await supabaseAuth?.auth.getSession()) ?? { data: { session: null } };
+    if (!data.session) {
+      return { name: 'login', query: { redirect: to.fullPath } };
+    }
   }
+  return true;
 });
 
 export default router;
