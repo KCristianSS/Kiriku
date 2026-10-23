@@ -9,6 +9,7 @@ const logoUrl = import.meta.env.VITE_LOGO_URL || '/logo.png';
 
 const navItems = [
   { name: 'Catálogo de Proyectos', path: '/' },
+  { name: 'Postularse', path: '/postular' },
   { name: 'Seguimiento', path: '/seguimiento' },
   { name: 'Proponer Proyecto', path: '/proponer' },
   { name: 'Donaciones', path: '/donaciones' },
