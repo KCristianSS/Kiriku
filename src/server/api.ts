@@ -253,6 +253,46 @@ router.patch('/proyectos/:id/revision', async (req: Request, res: Response) => {
 // -------------------------------------------------------------
 // 3. POSTULACIONES Y EVALUACIÓN EN 5 ETAPAS
 // -------------------------------------------------------------
+
+// KIR-99: Validación previa a la postulación (Verificación de mayoría de edad)
+router.post('/postulaciones/validar-edad', async (req: Request, res: Response) => {
+  try {
+    const { proyecto_id, fecha_nacimiento } = req.body;
+
+    if (!proyecto_id || !fecha_nacimiento) {
+      return res.status(400).json({ error: 'proyecto_id y fecha_nacimiento son obligatorios para validar' });
+    }
+
+    const proyRows = await query('SELECT id, titulo, es_mayor_edad, ubicacion FROM proyectos WHERE id = $1', [proyecto_id]);
+    if (!proyRows.length) {
+      return res.status(404).json({ error: 'El proyecto seleccionado no existe' });
+    }
+
+    const proyecto = proyRows[0];
+    const edad = calculateAge(fecha_nacimiento);
+    const esMayor = edad >= 18;
+    const esElegible = !proyecto.es_mayor_edad || esMayor;
+
+    res.json({
+      proyecto_id: proyecto.id,
+      proyecto_titulo: proyecto.titulo,
+      es_mayor_edad_requerido: proyecto.es_mayor_edad,
+      fecha_nacimiento,
+      edad_calculada: edad,
+      es_mayor_edad: esMayor,
+      es_elegible: esElegible,
+      mensaje: !esElegible
+        ? `Este proyecto requiere ser mayor de edad (+18 años). Tu edad calculada es de ${edad} años.`
+        : proyecto.es_mayor_edad
+        ? `Cumples con el requisito de mayoría de edad (${edad} años).`
+        : `Este proyecto no tiene restricción de mayoría de edad.`
+    });
+  } catch (err: any) {
+    console.error('Error validating age before application:', err);
+    res.status(500).json({ error: 'Error al validar mayoría de edad' });
+  }
+});
+
 router.post('/postulaciones', async (req: Request, res: Response) => {
   try {
     const {
@@ -284,12 +324,16 @@ router.post('/postulaciones', async (req: Request, res: Response) => {
     if (proyecto.es_mayor_edad && edad < 18) {
       return res.status(400).json({
         error: `Este proyecto requiere ser mayor de edad (+18 años). Edad calculada: ${edad} años.`,
+        edad_calculada: edad,
+        requerimiento_cumplido: false,
+        es_mayor_edad_requerido: true,
       });
     }
 
     if (proyecto.es_mayor_edad && !confirmacion_mayor_edad) {
       return res.status(400).json({
         error: 'Debe aceptar la declaración obligatoria de mayoría de edad.',
+        requiere_declaracion_jurada: true,
       });
     }
 
@@ -358,7 +402,7 @@ router.post('/postulaciones', async (req: Request, res: Response) => {
       );
     } else {
       const newApp = await query(
-        `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general, es_reenganche)
+        `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general, es_reasignacion)
          VALUES ($1, $2, 'en_proceso', false)
          RETURNING id`,
         [postulanteId, proyecto_id]
@@ -413,6 +457,8 @@ router.post('/postulaciones', async (req: Request, res: Response) => {
       message: 'Postulación registrada con éxito',
       postulacion_id: postulacionId,
       postulante_id: postulanteId,
+      edad_calculada: edad,
+      etapas_creadas: etapas.length,
     });
   } catch (err: any) {
     console.error('Error creating postulacion:', err);
@@ -435,7 +481,7 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
               app.id as postulacion_id,
               app.proyecto_id,
               app.estado_general,
-              app.es_reenganche,
+              app.es_reasignacion,
               app.created_at as fecha_postulacion,
               app.updated_at as fecha_actualizacion,
               proy.titulo as proyecto_titulo,
@@ -446,9 +492,14 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
        JOIN postulaciones app ON app.postulante_id = p.id
        JOIN proyectos proy ON app.proyecto_id = proy.id
        LEFT JOIN organizaciones org ON proy.organizacion_id = org.id
-       WHERE LOWER(p.ci) = LOWER($1) OR LOWER(p.email) = LOWER($1)
+       WHERE LOWER(TRIM(p.ci)) = LOWER(TRIM($1))
+          OR LOWER(REPLACE(REPLACE(p.ci, ' ', ''), '-', '')) = LOWER(REPLACE(REPLACE($1, ' ', ''), '-', ''))
+          OR LOWER(p.ci) LIKE LOWER($2)
+          OR LOWER(p.email) = LOWER(TRIM($1))
+          OR LOWER(p.email) LIKE LOWER($2)
+          OR LOWER(p.nombres || ' ' || p.apellidos) LIKE LOWER($2)
        ORDER BY app.created_at DESC`,
-      [term]
+      [term, `%${term}%`]
     );
 
     if (!postRows.length) {
@@ -486,7 +537,8 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
         postulacion: {
           id: row.postulacion_id,
           estado_general: row.estado_general,
-          es_reenganche: row.es_reenganche,
+          es_reasignacion: row.es_reasignacion,
+          es_reenganche: row.es_reasignacion,
           created_at: row.fecha_postulacion,
           updated_at: row.fecha_actualizacion,
           proyecto: {
@@ -511,12 +563,12 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
 // Banco de Postulantes & Lista de postulaciones para Administradores
 router.get('/postulaciones', async (req: Request, res: Response) => {
   try {
-    const { estado, proyecto_id, reenganche, q } = req.query;
+    const { estado, proyecto_id, reasignacion, reenganche, q } = req.query;
 
     let sql = `
       SELECT app.id as postulacion_id,
              app.estado_general,
-             app.es_reenganche,
+             app.es_reasignacion,
              app.created_at as postulacion_fecha,
              app.updated_at,
              p.id as postulante_id,
@@ -553,8 +605,8 @@ router.get('/postulaciones', async (req: Request, res: Response) => {
       sql += ` AND app.proyecto_id = $${params.length}`;
     }
 
-    if (reenganche === 'true') {
-      sql += ' AND app.es_reenganche = true';
+    if (reasignacion === 'true' || reenganche === 'true') {
+      sql += ' AND app.es_reasignacion = true';
     }
 
     if (q) {
@@ -593,7 +645,8 @@ router.get('/postulaciones', async (req: Request, res: Response) => {
         return {
           id: row.postulacion_id,
           estado_general: row.estado_general,
-          es_reenganche: row.es_reenganche,
+          es_reasignacion: row.es_reasignacion,
+          es_reenganche: row.es_reasignacion,
           created_at: row.postulacion_fecha,
           updated_at: row.updated_at,
           postulante: {
@@ -720,19 +773,20 @@ router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
   }
 });
 
-// Reasignación o Reenganche de postulante
-router.patch('/postulaciones/:id/reenganche', async (req: Request, res: Response) => {
+// Reasignación de postulante (KIR: Reasignación)
+const handleReasignacion = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { nuevo_proyecto_id, es_reenganche } = req.body;
+    const { nuevo_proyecto_id, es_reasignacion, es_reenganche } = req.body;
+    const isReassigned = es_reasignacion !== undefined ? es_reasignacion : (es_reenganche !== undefined ? es_reenganche : true);
 
     if (nuevo_proyecto_id) {
       // Reasignar a otro proyecto
       const rows = await query(
         `UPDATE postulaciones 
          SET proyecto_id = $1, 
-             es_reenganche = true, 
-             estado_general = 'reenganche',
+             es_reasignacion = true, 
+             estado_general = 'reasignacion',
              updated_at = NOW() 
          WHERE id = $2 
          RETURNING *`,
@@ -742,20 +796,23 @@ router.patch('/postulaciones/:id/reenganche', async (req: Request, res: Response
     } else {
       const rows = await query(
         `UPDATE postulaciones 
-         SET es_reenganche = $1, 
-             estado_general = CASE WHEN $1 THEN 'reenganche' ELSE estado_general END,
+         SET es_reasignacion = $1, 
+             estado_general = CASE WHEN $1 THEN 'reasignacion' ELSE estado_general END,
              updated_at = NOW() 
          WHERE id = $2 
          RETURNING *`,
-        [es_reenganche !== undefined ? es_reenganche : true, id]
+        [isReassigned, id]
       );
       return res.json(rows[0]);
     }
   } catch (err: any) {
-    console.error('Error managing reenganche:', err);
-    res.status(500).json({ error: 'Error al gestionar reenganche' });
+    console.error('Error managing reasignacion:', err);
+    res.status(500).json({ error: 'Error al gestionar reasignación' });
   }
-});
+};
+
+router.patch('/postulaciones/:id/reasignacion', handleReasignacion);
+router.patch('/postulaciones/:id/reenganche', handleReasignacion);
 
 // Actualizar estado general de la postulación
 router.patch('/postulaciones/:id/status', async (req: Request, res: Response) => {
@@ -763,7 +820,7 @@ router.patch('/postulaciones/:id/status', async (req: Request, res: Response) =>
     const { id } = req.params;
     const { estado_general } = req.body;
 
-    if (!['en_proceso', 'aprobado', 'rechazado', 'reenganche'].includes(estado_general)) {
+    if (!['en_proceso', 'aprobado', 'rechazado', 'reasignacion', 'reenganche'].includes(estado_general)) {
       return res.status(400).json({ error: 'Estado general inválido' });
     }
 
@@ -880,7 +937,7 @@ router.get('/metrics', async (req: Request, res: Response) => {
     const totalPost = await query('SELECT COUNT(*) as c FROM postulantes');
     const appsEnProceso = await query("SELECT COUNT(*) as c FROM postulaciones WHERE estado_general = 'en_proceso'");
     const appsAprobadas = await query("SELECT COUNT(*) as c FROM postulaciones WHERE estado_general = 'aprobado'");
-    const appsReenganche = await query("SELECT COUNT(*) as c FROM postulaciones WHERE es_reenganche = true OR estado_general = 'reenganche'");
+    const appsReasignacion = await query("SELECT COUNT(*) as c FROM postulaciones WHERE es_reasignacion = true OR estado_general = 'reasignacion' OR estado_general = 'reenganche'");
     const totalDonacionesBob = await query("SELECT COALESCE(SUM(monto_bob), 0) as s FROM donaciones WHERE tipo_donacion = 'economica'");
     const totalDonacionesEspecie = await query("SELECT COUNT(*) as c FROM donaciones WHERE tipo_donacion = 'especie'");
 
@@ -891,7 +948,8 @@ router.get('/metrics', async (req: Request, res: Response) => {
       totalPostulantes: parseInt(totalPost[0].c, 10),
       postulacionesEnProceso: parseInt(appsEnProceso[0].c, 10),
       postulacionesAprobadas: parseInt(appsAprobadas[0].c, 10),
-      postulacionesReenganche: parseInt(appsReenganche[0].c, 10),
+      postulacionesReasignacion: parseInt(appsReasignacion[0].c, 10),
+      postulacionesReenganche: parseInt(appsReasignacion[0].c, 10),
       totalDonacionesBob: parseFloat(totalDonacionesBob[0].s),
       totalDonacionesEspecie: parseInt(totalDonacionesEspecie[0].c, 10),
     });
