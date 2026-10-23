@@ -57,6 +57,18 @@ router.post('/auth/login', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/auth/demo-users', async (_req: Request, res: Response) => {
+  try {
+    const rows = await query<{ id: string; nombre: string; email: string; rol: string }>(
+      'SELECT id, nombre, email, rol FROM public.usuarios WHERE activo = TRUE ORDER BY id ASC LIMIT 6'
+    );
+    res.json(rows);
+  } catch (err: any) {
+    console.error('Error fetching demo users:', err);
+    res.json([]);
+  }
+});
+
 // -------------------------------------------------------------
 // 1. ORGANIZACIONES
 // -------------------------------------------------------------
@@ -1017,12 +1029,19 @@ router.get('/roles/users', authenticate, requirePermission('users.manage_roles')
   try {
     const search = String(req.query.q || '').trim();
     const users = await query(
-      `SELECT u.id, u.email, COALESCE(json_agg(json_build_object('id', r.id, 'code', r.code, 'name', r.name))
-        FILTER (WHERE r.id IS NOT NULL), '[]') AS roles
-       FROM auth.users u LEFT JOIN user_roles ur ON ur.user_id = u.id
+      `SELECT 
+         COALESCE(pu.id, u.id) AS id,
+         COALESCE(pu.email, u.email) AS email,
+         COALESCE(pu.nombre, (u.raw_user_meta_data->>'full_name'), 'Usuario') AS nombre,
+         COALESCE(json_agg(json_build_object('id', r.id, 'code', r.code, 'name', r.name))
+           FILTER (WHERE r.id IS NOT NULL), '[]') AS roles
+       FROM public.usuarios pu
+       FULL OUTER JOIN auth.users u ON u.id = pu.id
+       LEFT JOIN user_roles ur ON ur.user_id = COALESCE(pu.id, u.id)
        LEFT JOIN roles r ON r.id = ur.role_id
-       WHERE ($1 = '' OR u.email ILIKE '%' || $1 || '%')
-       GROUP BY u.id, u.email ORDER BY u.email LIMIT 50`,
+       WHERE ($1 = '' OR COALESCE(pu.email, u.email) ILIKE '%' || $1 || '%' OR COALESCE(pu.nombre, '') ILIKE '%' || $1 || '%')
+       GROUP BY pu.id, u.id, pu.email, u.email, pu.nombre, u.raw_user_meta_data
+       ORDER BY COALESCE(pu.email, u.email) LIMIT 50`,
       [search]
     );
     res.json(users);
