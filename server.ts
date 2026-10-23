@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import apiRouter from './src/server/api';
+import { setupSwagger } from './src/server/swagger';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +20,9 @@ async function startServer() {
 
   // Mount API router
   app.use('/api', apiRouter);
+
+  // Mount Swagger UI documentation at /api-docs (OpenAPI 3.0)
+  setupSwagger(app);
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
@@ -60,7 +64,9 @@ async function startServer() {
   app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`\n=================================================`);
     console.log(`🚀 [Kirikú Server] Iniciado con éxito!`);
-    console.log(`🌐 Accede en tu navegador: http://localhost:${PORT}`);
+    console.log(`🌐 Accede a la aplicación: http://localhost:${PORT}`);
+    console.log(`📚 Documentación Swagger UI: http://localhost:${PORT}/api-docs`);
+    console.log(`📄 Especificación OpenAPI JSON: http://localhost:${PORT}/api/openapi.json`);
     console.log(`=================================================\n`);
   });
 }
