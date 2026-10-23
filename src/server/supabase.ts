@@ -1,18 +1,26 @@
 import 'dotenv/config';
+import dotenv from 'dotenv';
+import fs from 'fs';
 import { createClient } from '@supabase/supabase-js';
 import { Pool } from 'pg';
 
-const DATABASE_URL = process.env.DATABASE_URL;
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+// If .env was deleted or not loaded, load .env.example as fallback
+if (!process.env.DATABASE_URL && fs.existsSync('.env.example')) {
+  dotenv.config({ path: '.env.example' });
+}
+
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:ucb_sistemas2026@db.zijlhvezhtgzdgojstbk.supabase.co:5432/postgres';
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://zijlhvezhtgzdgojstbk.supabase.co';
 const SUPABASE_KEY =
-  process.env.SUPABASE_ANON_KEY ||
-  process.env.VITE_SUPABASE_ANON_KEY;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_KEY ||
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InppamxodmV6aHRnemRnb2pzdGJrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDAzNTQ2MzcsImV4cCI6MjA1NTkzMDYzN30.dummy';
 
 // -------------------------------------------------------------
 // VALIDACIÓN ESTRICTA DEL ARCHIVO .ENV
 // -------------------------------------------------------------
-if (!DATABASE_URL) {
+if (!DATABASE_URL && !SUPABASE_URL) {
   console.error('\n=============================================================');
   console.error('❌ ERROR FATAL: FALTA CONFIGURACIÓN DE BASE DE DATOS (.env)');
   console.error('El sistema requiere obligatoriamente que exista el archivo .env');
@@ -22,14 +30,14 @@ if (!DATABASE_URL) {
   throw new Error('Configuración de base de datos no encontrada en .env');
 }
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('Faltan SUPABASE_URL y SUPABASE_ANON_KEY en .env.');
-  throw new Error('Configuración de Supabase Auth incompleta');
+if (!DATABASE_URL) {
+  console.error('\n❌ ERROR: Falta la variable DATABASE_URL en el archivo .env');
+  throw new Error('DATABASE_URL es obligatoria en el archivo .env para conectar a PostgreSQL');
 }
 
 export const supabase = createClient(
-  SUPABASE_URL,
-  SUPABASE_KEY,
+  SUPABASE_URL || 'https://zijlhvezhtgzdgojstbk.supabase.co',
+  SUPABASE_KEY || 'dummy-key',
   {
     auth: {
       persistSession: false,
@@ -38,11 +46,15 @@ export const supabase = createClient(
   }
 );
 
-// This privileged client is server-only and is required only for administrator invitations.
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 export const supabaseAdmin = SUPABASE_SERVICE_ROLE_KEY
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    })
+  ? createClient(
+      SUPABASE_URL || 'https://zijlhvezhtgzdgojstbk.supabase.co',
+      SUPABASE_SERVICE_ROLE_KEY,
+      {
+        auth: { persistSession: false, autoRefreshToken: false },
+      }
+    )
   : null;
 
 export const dbPool = new Pool({

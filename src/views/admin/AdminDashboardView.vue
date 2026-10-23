@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { LayoutDashboard, ArrowRight, CheckSquare, Users, ShieldCheck, KeyRound } from 'lucide-vue-next';
 import { ref, onMounted } from 'vue';
 import { api } from '../../api/client';
 import type { DashboardMetrics } from '../../types';
+import { useRouter } from 'vue-router';
+import { supabaseAuth } from '../../auth';
 import {
   LayoutDashboard,
   ArrowRight,
@@ -16,7 +17,25 @@ import {
   RefreshCw,
   ExternalLink,
   FileCode,
+  KeyRound,
+  UserPlus,
+  LogOut,
 } from 'lucide-vue-next';
+
+const router = useRouter();
+
+async function logout() {
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('kiriku_admin_token');
+    localStorage.removeItem('kiriku_user_email');
+  }
+  try {
+    if (supabaseAuth) {
+      await supabaseAuth.auth.signOut();
+    }
+  } catch {}
+  router.push('/login');
+}
 
 const metrics = ref<DashboardMetrics | null>(null);
 const loading = ref(false);
@@ -26,7 +45,7 @@ async function loadMetrics() {
   loading.value = true;
   error.value = null;
   try {
-    metrics.value = await api.getDashboardMetrics();
+    metrics.value = await api.getMetrics();
   } catch (err: any) {
     error.value = err?.response?.data?.error || 'Error al cargar métricas del panel';
   } finally {
@@ -45,7 +64,7 @@ onMounted(() => {
     <div class="relative bg-white border border-stone-200 rounded-3xl p-6 sm:p-10 shadow-xs overflow-hidden">
       <div class="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-[#289EAB] via-[#F58F38] to-[#EB455F]"></div>
 
-      <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div class="flex flex-col sm:row sm:items-center justify-between gap-4">
         <div>
           <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E8F6F8] text-[#1E7B85] text-xs font-semibold mb-2">
             <ShieldCheck class="w-3.5 h-3.5 text-[#289EAB]" />
@@ -56,19 +75,44 @@ onMounted(() => {
             Reportes y Administración
           </h1>
           <p class="text-stone-600 text-xs sm:text-sm mt-1">
-            Supervisión integral de proyectos, postulaciones comunitarias y donaciones recibidas.
+            Supervisión integral de proyectos, postulaciones comunitarias, donaciones y gestión de roles.
           </p>
         </div>
 
-        <button
-          @click="loadMetrics"
-          :disabled="loading"
-          class="px-4 py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-semibold rounded-xl transition-colors flex items-center gap-2 cursor-pointer"
-        >
-          <RefreshCw :class="['w-3.5 h-3.5', loading ? 'animate-spin' : '']" />
-          <span>Actualizar Datos</span>
-        </button>
+        <div class="flex items-center gap-2">
+          <router-link
+            to="/admin/roles"
+            class="px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-xl transition-all inline-flex items-center gap-1.5 shadow-xs"
+          >
+            <KeyRound class="w-3.5 h-3.5" />
+            <span>Roles y Usuarios</span>
+          </router-link>
+
+          <button
+            @click="loadMetrics"
+            :disabled="loading"
+            class="px-3.5 py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+          >
+            <RefreshCw :class="['w-3.5 h-3.5', loading ? 'animate-spin' : '']" />
+            <span>Actualizar</span>
+          </button>
+
+          <button
+            @click="logout"
+            class="px-3.5 py-2 bg-stone-100 hover:bg-red-50 hover:text-red-700 text-stone-700 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer border border-stone-200"
+            title="Cerrar sesión"
+          >
+            <LogOut class="w-3.5 h-3.5 text-red-500" />
+            <span>Salir</span>
+          </button>
+        </div>
       </div>
+    </div>
+
+    <!-- Error state -->
+    <div v-if="error" role="alert" class="bg-red-50 border border-red-200 text-red-700 rounded-2xl p-4 text-sm flex items-center justify-between">
+      <span>{{ error }}</span>
+      <button @click="loadMetrics" class="underline font-semibold ml-4">Reintentar</button>
     </div>
 
     <!-- Metrics Cards Grid -->
@@ -97,16 +141,6 @@ onMounted(() => {
       <div class="bg-white rounded-2xl border border-stone-200 p-5 shadow-xs">
         <div class="flex items-center justify-between text-xs text-stone-500 mb-2">
           <span>Banco de Postulantes</span>
-          <ArrowRight class="w-3.5 h-3.5 opacity-80" />
-        </router-link>
-        <router-link
-          to="/admin/roles"
-          class="px-5 py-2.5 bg-stone-800 hover:bg-stone-700 text-white rounded-xl text-xs font-semibold transition-all inline-flex items-center gap-2 shadow-xs"
-        >
-          <KeyRound class="w-4 h-4" />
-          <span>Roles y permisos</span>
-          <ArrowRight class="w-3.5 h-3.5 opacity-80" />
-        </router-link>
           <Users class="w-4 h-4 text-[#F58F38]" />
         </div>
         <div class="text-2xl font-extrabold text-stone-900 font-mono">
@@ -147,7 +181,7 @@ onMounted(() => {
     </div>
 
     <!-- Quick Navigation to Admin Modules -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
       <router-link
         to="/admin/revision"
         class="bg-white rounded-2xl border border-stone-200 hover:border-[#289EAB] p-6 shadow-xs transition-all flex items-center justify-between group"
@@ -188,12 +222,32 @@ onMounted(() => {
         <ArrowRight class="w-5 h-5 text-stone-400 group-hover:text-[#F58F38] group-hover:translate-x-1 transition-all" />
       </router-link>
 
+      <router-link
+        to="/admin/roles"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-stone-800 p-6 shadow-xs transition-all flex items-center justify-between group"
+      >
+        <div class="flex items-center gap-4">
+          <div class="w-12 h-12 bg-stone-100 text-stone-800 rounded-xl flex items-center justify-center">
+            <KeyRound class="w-6 h-6" />
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-stone-900 group-hover:text-stone-800 transition-colors">
+              Roles y Permisos
+            </h3>
+            <p class="text-xs text-stone-500 mt-0.5">
+              Gestión de roles RBAC, registro y asignación de usuarios (RF-01).
+            </p>
+          </div>
+        </div>
+        <ArrowRight class="w-5 h-5 text-stone-400 group-hover:text-stone-800 group-hover:translate-x-1 transition-all" />
+      </router-link>
+
       <!-- Swagger Documentation Card -->
       <a
         href="/api-docs"
         target="_blank"
         rel="noopener noreferrer"
-        class="bg-white rounded-2xl border border-stone-200 hover:border-[#289EAB] p-6 shadow-xs transition-all flex items-center justify-between group sm:col-span-2"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#289EAB] p-6 shadow-xs transition-all flex items-center justify-between group sm:col-span-3"
       >
         <div class="flex items-center gap-4">
           <div class="w-12 h-12 bg-[#E8F6F8] text-[#1E7B85] rounded-xl flex items-center justify-center">
@@ -209,7 +263,7 @@ onMounted(() => {
               </span>
             </div>
             <p class="text-xs text-stone-500 mt-0.5">
-              Colección completa e interactiva de endpoints para probar: Proyectos, Postulaciones, Validación de Mayoría de Edad, Evaluaciones en 5 etapas, Donaciones y Métricas.
+              Colección completa e interactiva de endpoints para probar: Proyectos, Postulaciones, Validación de Mayoría de Edad, Evaluaciones en 5 etapas, Donaciones, Roles y Métricas.
             </p>
           </div>
         </div>
