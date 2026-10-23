@@ -91,8 +91,19 @@ function getStageMeta(etapa: EtapaNombre) {
   );
 }
 
-function getStatusBadge(estado: EtapaEstado) {
-  switch (estado) {
+function normalizeState(estado: any): string {
+  if (!estado) return 'pendiente';
+  const s = String(estado).trim().toLowerCase();
+  if (s === 'aprobada') return 'aprobado';
+  if (s === 'rechazada') return 'rechazado';
+  if (s === 'observada') return 'observado';
+  if (s === 'en revision' || s === 'en_revisión' || s === 'en_revision') return 'en_revision';
+  return s;
+}
+
+function getStatusBadge(estado: any) {
+  const norm = normalizeState(estado);
+  switch (norm) {
     case 'aprobado':
       return {
         text: 'Aprobada',
@@ -160,13 +171,13 @@ function saveEdit() {
         :key="stage.id"
         :class="[
           'p-2.5 rounded-xl border text-center transition-all',
-          stage.estado === 'aprobado'
+          normalizeState(stage.estado) === 'aprobado'
             ? 'border-emerald-300 bg-emerald-50/50'
-            : stage.estado === 'en_revision'
+            : normalizeState(stage.estado) === 'en_revision'
             ? 'border-blue-400 bg-blue-50/50 shadow-xs ring-1 ring-blue-300'
-            : stage.estado === 'observado'
+            : normalizeState(stage.estado) === 'observado'
             ? 'border-amber-300 bg-amber-50/50'
-            : stage.estado === 'rechazado'
+            : normalizeState(stage.estado) === 'rechazado'
             ? 'border-rose-300 bg-rose-50/50'
             : 'border-stone-200 bg-stone-50/40 opacity-75'
         ]"
@@ -176,13 +187,13 @@ function saveEdit() {
             :is="getStatusBadge(stage.estado).icon"
             :class="[
               'w-5 h-5',
-              stage.estado === 'aprobado'
+              normalizeState(stage.estado) === 'aprobado'
                 ? 'text-emerald-700'
-                : stage.estado === 'en_revision'
+                : normalizeState(stage.estado) === 'en_revision'
                 ? 'text-blue-700 animate-pulse'
-                : stage.estado === 'observado'
+                : normalizeState(stage.estado) === 'observado'
                 ? 'text-amber-700'
-                : stage.estado === 'rechazado'
+                : normalizeState(stage.estado) === 'rechazado'
                 ? 'text-rose-700'
                 : 'text-stone-400'
             ]"
@@ -194,13 +205,13 @@ function saveEdit() {
         <div
           :class="[
             'text-[10px] font-semibold uppercase tracking-wider',
-            stage.estado === 'aprobado'
+            normalizeState(stage.estado) === 'aprobado'
               ? 'text-emerald-700'
-              : stage.estado === 'en_revision'
+              : normalizeState(stage.estado) === 'en_revision'
               ? 'text-blue-700'
-              : stage.estado === 'observado'
+              : normalizeState(stage.estado) === 'observado'
               ? 'text-amber-700'
-              : stage.estado === 'rechazado'
+              : normalizeState(stage.estado) === 'rechazado'
               ? 'text-rose-700'
               : 'text-stone-500'
           ]"
@@ -225,13 +236,13 @@ function saveEdit() {
             <div
               :class="[
                 'w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold',
-                stage.estado === 'aprobado'
+                normalizeState(stage.estado) === 'aprobado'
                   ? 'bg-emerald-100 text-emerald-800'
-                  : stage.estado === 'en_revision'
+                  : normalizeState(stage.estado) === 'en_revision'
                   ? 'bg-blue-100 text-blue-800 ring-2 ring-blue-300'
-                  : stage.estado === 'observado'
+                  : normalizeState(stage.estado) === 'observado'
                   ? 'bg-amber-100 text-amber-800'
-                  : stage.estado === 'rechazado'
+                  : normalizeState(stage.estado) === 'rechazado'
                   ? 'bg-rose-100 text-rose-800'
                   : 'bg-stone-100 text-stone-500'
               ]"
