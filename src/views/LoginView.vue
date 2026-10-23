@@ -1,15 +1,27 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { api } from '../api/client';
-import { ShieldCheck, LogIn, KeyRound, AlertCircle, Info } from 'lucide-vue-next';
+import { api, apiClient } from '../api/client';
+import { ShieldCheck, LogIn, AlertCircle, Info } from 'lucide-vue-next';
 
 const email = ref('admin@kiriku.org');
 const password = ref('Admin123!');
 const error = ref('');
 const busy = ref(false);
+const demoUsers = ref<Array<{ id: string; nombre: string; email: string; rol: string }>>([]);
 const router = useRouter();
 const route = useRoute();
+
+async function loadDemoUsers() {
+  try {
+    const res = await apiClient.get('/auth/demo-users');
+    demoUsers.value = res.data;
+  } catch (e) {
+    console.error('Error loading users from DB:', e);
+  }
+}
+
+onMounted(loadDemoUsers);
 
 async function login() {
   if (!email.value.trim() || !password.value) {
@@ -92,48 +104,23 @@ function fillCredentials(fillEmail: string, fillPass: string) {
         </button>
       </form>
 
-      <!-- Cuentas registradas para pruebas rápidas -->
-      <div class="pt-4 border-t border-stone-100 space-y-2">
+      <!-- Cuentas reales cargadas directamente de la BD -->
+      <div v-if="demoUsers.length" class="pt-4 border-t border-stone-100 space-y-2">
         <div class="flex items-center gap-1.5 text-[11px] font-bold text-stone-500 uppercase tracking-wider">
           <Info class="w-3.5 h-3.5 text-[#289EAB]" />
-          <span>Cuentas registradas en la Base de Datos:</span>
+          <span>Cuentas activas en la BD (Clic para autocompletar):</span>
         </div>
 
         <div class="grid grid-cols-2 gap-2 text-xs">
           <button
+            v-for="u in demoUsers"
+            :key="u.email"
             type="button"
-            @click="fillCredentials('admin@kiriku.org', 'Admin123!')"
-            class="p-2 rounded-xl bg-stone-50 hover:bg-[#E8F6F8] hover:text-[#1E7B85] border border-stone-200 text-left cursor-pointer transition-all"
+            @click="fillCredentials(u.email, 'Admin123!')"
+            class="p-2.5 rounded-xl bg-stone-50 hover:bg-[#E8F6F8] hover:text-[#1E7B85] border border-stone-200 text-left cursor-pointer transition-all"
           >
-            <span class="font-bold block truncate">admin@kiriku.org</span>
-            <span class="text-[10px] text-stone-400">Pass: Admin123! (Admin)</span>
-          </button>
-
-          <button
-            type="button"
-            @click="fillCredentials('guillermosancalli86@gmail.com', 'Admin123!')"
-            class="p-2 rounded-xl bg-stone-50 hover:bg-[#E8F6F8] hover:text-[#1E7B85] border border-stone-200 text-left cursor-pointer transition-all"
-          >
-            <span class="font-bold block truncate">guillermo...</span>
-            <span class="text-[10px] text-stone-400">Pass: Admin123! (Admin)</span>
-          </button>
-
-          <button
-            type="button"
-            @click="fillCredentials('evaluador@kiriku.org', 'Evaluador123!')"
-            class="p-2 rounded-xl bg-stone-50 hover:bg-[#E8F6F8] hover:text-[#1E7B85] border border-stone-200 text-left cursor-pointer transition-all"
-          >
-            <span class="font-bold block truncate">evaluador@kiriku.org</span>
-            <span class="text-[10px] text-stone-400">Pass: Evaluador123!</span>
-          </button>
-
-          <button
-            type="button"
-            @click="fillCredentials('gestor@kiriku.org', 'Gestor123!')"
-            class="p-2 rounded-xl bg-stone-50 hover:bg-[#E8F6F8] hover:text-[#1E7B85] border border-stone-200 text-left cursor-pointer transition-all"
-          >
-            <span class="font-bold block truncate">gestor@kiriku.org</span>
-            <span class="text-[10px] text-stone-400">Pass: Gestor123!</span>
+            <span class="font-bold block truncate text-stone-900">{{ u.email }}</span>
+            <span class="text-[10px] text-stone-500 block truncate">{{ u.nombre }} ({{ u.rol }})</span>
           </button>
         </div>
       </div>
