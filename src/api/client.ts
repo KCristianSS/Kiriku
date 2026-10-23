@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { supabaseAuth } from '../auth';
 import type {
   Proyecto,
   Organizacion,
@@ -22,7 +23,34 @@ export const apiClient = axios.create({
   },
 });
 
+apiClient.interceptors.request.use(async (config) => {
+  const { data } = await supabaseAuth?.auth.getSession() ?? { data: { session: null } };
+  if (data.session?.access_token) config.headers.Authorization = `Bearer ${data.session.access_token}`;
+  return config;
+});
+
 export const api = {
+  async getRoles() {
+    return (await apiClient.get('/roles')).data;
+  },
+  async getRolePermissions() {
+    return (await apiClient.get('/roles/permissions')).data;
+  },
+  async createRole(payload: { code: string; name: string; description: string; permission_codes: string[] }) {
+    return (await apiClient.post('/roles', payload)).data;
+  },
+  async updateRole(id: number, payload: { name: string; description: string; active: boolean; permission_codes: string[] }) {
+    return (await apiClient.patch(`/roles/${id}`, payload)).data;
+  },
+  async getRoleUsers(q = '') {
+    return (await apiClient.get('/roles/users', { params: { q } })).data;
+  },
+  async registerRoleUser(payload: { name: string; email: string; role_id: number }) {
+    return (await apiClient.post('/roles/users', payload)).data;
+  },
+  async assignRole(userId: string, roleId: number) {
+    return (await apiClient.put(`/roles/users/${userId}`, { role_id: roleId })).data;
+  },
   // Proyectos
   async getProyectos(params?: {
     estado?: string;
