@@ -19,7 +19,7 @@ const routes: RouteRecordRaw[] = [
     component: ProjectsCatalogView,
   },
   {
-    path: '/postular/:id',
+    path: '/postular/:id?',
     name: 'apply',
     component: ApplyView,
   },

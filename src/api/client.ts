@@ -8,6 +8,9 @@ import type {
   EvaluacionEtapa,
   Donacion,
   CreatePostulantePayload,
+  PostulacionRegistroResponse,
+  ValidarEdadPayload,
+  ValidarEdadResponse,
   ProposeProjectPayload,
   CreateDonationPayload,
   DashboardMetrics,
@@ -59,7 +62,7 @@ export const api = {
     return res.data;
   },
 
-  async getProyectoById(id: string): Promise<Proyecto> {
+  async getProyectoById(id: number | string): Promise<Proyecto> {
     const res = await apiClient.get<Proyecto>(`/proyectos/${id}`);
     return res.data;
   },
@@ -70,7 +73,7 @@ export const api = {
   },
 
   async reviewProject(
-    id: string,
+    id: number | string,
     payload: { estado: 'aprobado' | 'rechazado' | 'pendiente_revision'; motivo_rechazo?: string }
   ): Promise<Proyecto> {
     const res = await apiClient.patch<Proyecto>(`/proyectos/${id}/revision`, payload);
@@ -89,12 +92,13 @@ export const api = {
   },
 
   // Postulaciones
-  async submitApplication(payload: CreatePostulantePayload): Promise<{
-    message: string;
-    postulacion_id: string;
-    postulante_id: string;
-  }> {
-    const res = await apiClient.post('/postulaciones', payload);
+  async validateAge(payload: ValidarEdadPayload): Promise<ValidarEdadResponse> {
+    const res = await apiClient.post<ValidarEdadResponse>('/postulaciones/validar-edad', payload);
+    return res.data;
+  },
+
+  async submitApplication(payload: CreatePostulantePayload): Promise<PostulacionRegistroResponse> {
+    const res = await apiClient.post<PostulacionRegistroResponse>('/postulaciones', payload);
     return res.data;
   },
 
@@ -102,13 +106,14 @@ export const api = {
     Array<{
       postulante: Postulante;
       postulacion: {
-        id: string;
+        id: number | string;
         estado_general: string;
-        es_reenganche: boolean;
+        es_reasignacion: boolean;
+        es_reenganche?: boolean;
         created_at: string;
         updated_at: string;
         proyecto: {
-          id: string;
+          id: number | string;
           titulo: string;
           ubicacion: string;
           portada_url?: string;
@@ -126,14 +131,16 @@ export const api = {
 
   async getAdminApplications(params?: {
     estado?: string;
-    proyecto_id?: string;
+    proyecto_id?: number | string;
+    reasignacion?: boolean;
     reenganche?: boolean;
     q?: string;
   }): Promise<Postulacion[]> {
+    const isReassigned = params?.reasignacion || params?.reenganche;
     const res = await apiClient.get<Postulacion[]>('/postulaciones', {
       params: {
         ...params,
-        reenganche: params?.reenganche ? 'true' : undefined,
+        reasignacion: isReassigned ? 'true' : undefined,
       },
     });
     return res.data;
@@ -152,7 +159,7 @@ export const api = {
   },
 
   async updateEvaluationStage(
-    id: string,
+    id: number | string,
     payload: {
       estado: 'pendiente' | 'en_curso' | 'aprobada' | 'rechazada';
       comentarios?: string;
@@ -163,19 +170,30 @@ export const api = {
     return res.data;
   },
 
-  async manageReenganche(
-    id: string,
+  async manageReasignacion(
+    id: number | string,
     payload: {
-      nuevo_proyecto_id?: string;
+      nuevo_proyecto_id?: number | string;
+      es_reasignacion?: boolean;
       es_reenganche?: boolean;
     }
   ): Promise<Postulacion> {
-    const res = await apiClient.patch<Postulacion>(`/postulaciones/${id}/reenganche`, payload);
+    const res = await apiClient.patch<Postulacion>(`/postulaciones/${id}/reasignacion`, payload);
     return res.data;
   },
 
+  async manageReenganche(
+    id: number | string,
+    payload: {
+      nuevo_proyecto_id?: number | string;
+      es_reenganche?: boolean;
+    }
+  ): Promise<Postulacion> {
+    return this.manageReasignacion(id, payload);
+  },
+
   async updateApplicationStatus(
-    id: string,
+    id: number | string,
     payload: { estado_general: string }
   ): Promise<Postulacion> {
     const res = await apiClient.patch<Postulacion>(`/postulaciones/${id}/status`, payload);
