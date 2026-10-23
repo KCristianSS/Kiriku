@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { LayoutDashboard, ArrowRight, CheckSquare, Users, ShieldCheck, KeyRound } from 'lucide-vue-next';
 import { ref, onMounted } from 'vue';
 import { api } from '../../api/client';
 import type { DashboardMetrics } from '../../types';
@@ -96,6 +97,16 @@ onMounted(() => {
       <div class="bg-white rounded-2xl border border-stone-200 p-5 shadow-xs">
         <div class="flex items-center justify-between text-xs text-stone-500 mb-2">
           <span>Banco de Postulantes</span>
+          <ArrowRight class="w-3.5 h-3.5 opacity-80" />
+        </router-link>
+        <router-link
+          to="/admin/roles"
+          class="px-5 py-2.5 bg-stone-800 hover:bg-stone-700 text-white rounded-xl text-xs font-semibold transition-all inline-flex items-center gap-2 shadow-xs"
+        >
+          <KeyRound class="w-4 h-4" />
+          <span>Roles y permisos</span>
+          <ArrowRight class="w-3.5 h-3.5 opacity-80" />
+        </router-link>
           <Users class="w-4 h-4 text-[#F58F38]" />
         </div>
         <div class="text-2xl font-extrabold text-stone-900 font-mono">

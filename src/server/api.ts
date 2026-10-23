@@ -1,5 +1,6 @@
 import express, { Request, Response, Router } from 'express';
-import { query } from './supabase';
+import { query, supabaseAdmin } from './supabase';
+import { authenticate, requirePermission } from './authorization';
 
 const router: Router = express.Router();
 
@@ -28,7 +29,7 @@ router.get('/organizaciones', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/organizaciones', async (req: Request, res: Response) => {
+router.post('/organizaciones', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
   try {
     const { nombre, tipo, contacto_nombre, contacto_email, contacto_telefono } = req.body;
     if (!nombre || !tipo) {
@@ -216,7 +217,7 @@ router.post('/proyectos', async (req: Request, res: Response) => {
 });
 
 // Revisión de proyectos: aprobar o rechazar con motivo
-router.patch('/proyectos/:id/revision', async (req: Request, res: Response) => {
+router.patch('/proyectos/:id/revision', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { estado, motivo_rechazo } = req.body;
@@ -561,7 +562,7 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
 });
 
 // Banco de Postulantes & Lista de postulaciones para Administradores
-router.get('/postulaciones', async (req: Request, res: Response) => {
+router.get('/postulaciones', authenticate, requirePermission('applications.read'), async (req: Request, res: Response) => {
   try {
     const { estado, proyecto_id, reasignacion, reenganche, q } = req.query;
 
@@ -681,7 +682,7 @@ router.get('/postulaciones', async (req: Request, res: Response) => {
 });
 
 // Banco de postulantes único
-router.get('/postulantes', async (req: Request, res: Response) => {
+router.get('/postulantes', authenticate, requirePermission('applications.read'), async (req: Request, res: Response) => {
   try {
     const { q, profesion } = req.query;
     let sql = `
@@ -715,7 +716,7 @@ router.get('/postulantes', async (req: Request, res: Response) => {
 });
 
 // Calificar etapa de evaluación
-router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
+router.patch('/evaluaciones/:id', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { estado, comentarios, evaluador } = req.body;
@@ -773,6 +774,8 @@ router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
   }
 });
 
+// Reasignación o Reenganche de postulante
+router.patch('/postulaciones/:id/reenganche', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
 // Reasignación de postulante (KIR: Reasignación)
 const handleReasignacion = async (req: Request, res: Response) => {
   try {
@@ -815,7 +818,7 @@ router.patch('/postulaciones/:id/reasignacion', handleReasignacion);
 router.patch('/postulaciones/:id/reenganche', handleReasignacion);
 
 // Actualizar estado general de la postulación
-router.patch('/postulaciones/:id/status', async (req: Request, res: Response) => {
+router.patch('/postulaciones/:id/status', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { estado_general } = req.body;
@@ -846,7 +849,7 @@ router.patch('/postulaciones/:id/status', async (req: Request, res: Response) =>
 // -------------------------------------------------------------
 // 4. DONACIONES
 // -------------------------------------------------------------
-router.get('/donaciones', async (req: Request, res: Response) => {
+router.get('/donaciones', authenticate, requirePermission('donations.manage'), async (req: Request, res: Response) => {
   try {
     const rows = await query(`
       SELECT d.*, 
@@ -929,7 +932,7 @@ router.post('/donaciones', async (req: Request, res: Response) => {
 // -------------------------------------------------------------
 // 5. MÉTRICAS PARA DASHBOARD ADMINISTRATIVO
 // -------------------------------------------------------------
-router.get('/metrics', async (req: Request, res: Response) => {
+router.get('/metrics', authenticate, requirePermission('applications.read'), async (req: Request, res: Response) => {
   try {
     const totalProj = await query('SELECT COUNT(*) as c FROM proyectos');
     const aprobadosProj = await query("SELECT COUNT(*) as c FROM proyectos WHERE estado = 'aprobado'");
@@ -956,6 +959,164 @@ router.get('/metrics', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Error fetching metrics:', err);
     res.status(500).json({ error: 'Error al calcular métricas' });
+  }
+});
+
+// -------------------------------------------------------------
+// Roles y permisos (RBAC)
+// -------------------------------------------------------------
+router.get('/roles/permissions', authenticate, requirePermission('roles.manage'), async (_req, res) => {
+  try {
+    res.json(await query('SELECT id, code, name, description FROM permissions ORDER BY name'));
+  } catch (error) {
+    console.error('Error obteniendo permisos:', error);
+    res.status(500).json({ error: 'No se pudieron obtener los permisos' });
+  }
+});
+
+router.get('/roles/users', authenticate, requirePermission('users.manage_roles'), async (req, res) => {
+  try {
+    const search = String(req.query.q || '').trim();
+    const users = await query(
+      `SELECT u.id, u.email, COALESCE(json_agg(json_build_object('id', r.id, 'code', r.code, 'name', r.name))
+        FILTER (WHERE r.id IS NOT NULL), '[]') AS roles
+       FROM auth.users u LEFT JOIN user_roles ur ON ur.user_id = u.id
+       LEFT JOIN roles r ON r.id = ur.role_id
+       WHERE ($1 = '' OR u.email ILIKE '%' || $1 || '%')
+       GROUP BY u.id, u.email ORDER BY u.email LIMIT 50`, [search]
+    );
+    res.json(users);
+  } catch (error) {
+    console.error('Error obteniendo usuarios:', error);
+    res.status(500).json({ error: 'No se pudieron obtener los usuarios de Supabase Auth' });
+  }
+});
+
+router.post('/roles/users', authenticate, requirePermission('users.manage_roles'), async (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const roleId = Number(req.body?.role_id);
+  if (name.length < 2 || name.length > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !Number.isInteger(roleId) || roleId < 1) {
+    return res.status(400).json({ error: 'Nombre, correo válido y rol son obligatorios' });
+  }
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Configura SUPABASE_SERVICE_ROLE_KEY en el servidor para registrar usuarios' });
+  }
+  try {
+    const roles = await query('SELECT id FROM roles WHERE id = $1 AND active = TRUE', [roleId]);
+    if (!roles.length) return res.status(400).json({ error: 'Selecciona un rol activo' });
+
+    const { data, error } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+      data: { full_name: name },
+    });
+    if (error) {
+      const status = /already|registered|exists/i.test(error.message) ? 409 : 400;
+      return res.status(status).json({ error: status === 409 ? 'Ya existe una cuenta con ese correo' : 'No se pudo enviar la invitación a Supabase Auth' });
+    }
+    if (!data.user) return res.status(502).json({ error: 'Supabase no devolvió el usuario creado' });
+
+    try {
+      await query(
+        'INSERT INTO user_roles (user_id, role_id, assigned_by) VALUES ($1, $2, $3)',
+        [data.user.id, roleId, (req as any).userId]
+      );
+    } catch (error) {
+      await supabaseAdmin.auth.admin.deleteUser(data.user.id);
+      throw error;
+    }
+
+    res.status(201).json({
+      id: data.user.id,
+      email: data.user.email,
+      message: 'Usuario registrado. Supabase Auth enviará un correo para completar la invitación.',
+    });
+  } catch (error) {
+    console.error('Error registrando usuario:', error);
+    res.status(500).json({ error: 'No se pudo registrar el usuario' });
+  }
+});
+
+router.get('/roles', authenticate, requirePermission('roles.manage'), async (_req, res) => {
+  try {
+    res.json(await query(
+      `SELECT r.id, r.code, r.name, r.description, r.active,
+        COALESCE(json_agg(json_build_object('id', p.id, 'code', p.code, 'name', p.name))
+        FILTER (WHERE p.id IS NOT NULL), '[]') AS permissions
+       FROM roles r LEFT JOIN role_permissions rp ON rp.role_id = r.id
+       LEFT JOIN permissions p ON p.id = rp.permission_id
+       GROUP BY r.id ORDER BY r.name`
+    ));
+  } catch (error) {
+    console.error('Error obteniendo roles:', error);
+    res.status(500).json({ error: 'No se pudieron obtener los roles' });
+  }
+});
+
+router.post('/roles', authenticate, requirePermission('roles.manage'), async (req, res) => {
+  const { code, name, description = '', permission_codes = [] } = req.body || {};
+  if (!/^[a-z][a-z0-9_]{2,49}$/.test(code || '') || !name?.trim() || !Array.isArray(permission_codes)) {
+    return res.status(400).json({ error: 'Código, nombre y lista de permisos válidos son obligatorios' });
+  }
+  try {
+    const role = (await query<{ id: number }>(
+      'INSERT INTO roles (code, name, description) VALUES ($1, $2, $3) RETURNING id',
+      [code, name.trim(), String(description).trim()]
+    ))[0];
+    await query(
+      `INSERT INTO role_permissions (role_id, permission_id)
+       SELECT $1, id FROM permissions WHERE code = ANY($2::text[]) ON CONFLICT DO NOTHING`,
+      [role.id, permission_codes]
+    );
+    res.status(201).json({ id: role.id, code, name: name.trim() });
+  } catch (error: any) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Ya existe un rol con ese código' });
+    console.error('Error creando rol:', error);
+    res.status(500).json({ error: 'No se pudo crear el rol' });
+  }
+});
+
+router.patch('/roles/:id', authenticate, requirePermission('roles.manage'), async (req, res) => {
+  const roleId = Number(req.params.id);
+  const { name, description = '', active = true, permission_codes = [] } = req.body || {};
+  if (!Number.isInteger(roleId) || roleId < 1 || !name?.trim() || !Array.isArray(permission_codes)) {
+    return res.status(400).json({ error: 'Datos del rol inválidos' });
+  }
+  try {
+    const updated = await query(
+      'UPDATE roles SET name = $2, description = $3, active = $4 WHERE id = $1 RETURNING id',
+      [roleId, name.trim(), String(description).trim(), Boolean(active)]
+    );
+    if (!updated.length) return res.status(404).json({ error: 'Rol no encontrado' });
+    await query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
+    await query(
+      `INSERT INTO role_permissions (role_id, permission_id)
+       SELECT $1, id FROM permissions WHERE code = ANY($2::text[]) ON CONFLICT DO NOTHING`,
+      [roleId, permission_codes]
+    );
+    res.json({ message: 'Rol actualizado' });
+  } catch (error) {
+    console.error('Error actualizando rol:', error);
+    res.status(500).json({ error: 'No se pudo actualizar el rol' });
+  }
+});
+
+router.put('/roles/users/:userId', authenticate, requirePermission('users.manage_roles'), async (req, res) => {
+  const { userId } = req.params;
+  const roleId = Number(req.body?.role_id);
+  if (!/^[0-9a-f-]{36}$/i.test(userId) || !Number.isInteger(roleId) || roleId < 1) {
+    return res.status(400).json({ error: 'Usuario o rol inválido' });
+  }
+  try {
+    if (userId === (req as any).userId) return res.status(400).json({ error: 'No puedes cambiar tus propios roles' });
+    const role = await query('SELECT id FROM roles WHERE id = $1 AND active = TRUE', [roleId]);
+    const user = await query('SELECT id FROM auth.users WHERE id = $1', [userId]);
+    if (!role.length || !user.length) return res.status(404).json({ error: 'Usuario o rol no encontrado' });
+    await query('DELETE FROM user_roles WHERE user_id = $1', [userId]);
+    await query('INSERT INTO user_roles (user_id, role_id, assigned_by) VALUES ($1, $2, $3)', [userId, roleId, (req as any).userId]);
+    res.json({ message: 'Rol asignado correctamente' });
+  } catch (error) {
+    console.error('Error asignando rol:', error);
+    res.status(500).json({ error: 'No se pudo asignar el rol' });
   }
 });
 
@@ -995,7 +1156,7 @@ router.get('/imagenes/:clave', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/imagenes', async (req: Request, res: Response) => {
+router.get('/imagenes', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
   try {
     const rows = await query(
       'SELECT id, clave, nombre, url, tipo_mime, created_at FROM imagenes ORDER BY created_at DESC'
@@ -1007,7 +1168,7 @@ router.get('/imagenes', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/imagenes', async (req: Request, res: Response) => {
+router.post('/imagenes', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
   try {
     const { clave, nombre, url, tipo_mime } = req.body;
 
