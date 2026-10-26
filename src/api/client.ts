@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { supabaseAuth } from '../auth';
 import type {
   Proyecto,
   Organizacion,
@@ -22,7 +23,70 @@ export const apiClient = axios.create({
   },
 });
 
+apiClient.interceptors.request.use(async (config) => {
+  try {
+    const { data } = (await supabaseAuth?.auth.getSession()) ?? { data: { session: null } };
+    if (data.session?.access_token) {
+      config.headers.Authorization = `Bearer ${data.session.access_token}`;
+    } else {
+      // Para desarrollo/pruebas locales de administración
+      const savedToken = localStorage.getItem('kiriku_admin_token');
+      if (savedToken) {
+        config.headers.Authorization = `Bearer ${savedToken}`;
+      }
+    }
+  } catch (err) {
+    // Si no hay sesión o auth no está disponible, continuar sin header
+  }
+  return config;
+});
+
 export const api = {
+  // Autenticación Administrativa
+  async login(payload: { email: string; password: string }): Promise<{ token: string; user: any; message: string }> {
+    const res = await apiClient.post('/auth/login', payload);
+    return res.data;
+  },
+
+  // Roles y Permisos (KIR-11 & KIR-6)
+  async getRoles(): Promise<any[]> {
+    const res = await apiClient.get('/roles');
+    return res.data;
+  },
+
+  async getRolePermissions(): Promise<any[]> {
+    const res = await apiClient.get('/roles/permissions');
+    return res.data;
+  },
+
+  async createRole(payload: { code: string; name: string; description: string; permission_codes: string[] }): Promise<any> {
+    const res = await apiClient.post('/roles', payload);
+    return res.data;
+  },
+
+  async updateRole(
+    id: number,
+    payload: { name: string; description: string; active: boolean; permission_codes: string[] }
+  ): Promise<any> {
+    const res = await apiClient.patch(`/roles/${id}`, payload);
+    return res.data;
+  },
+
+  async getRoleUsers(q = ''): Promise<any[]> {
+    const res = await apiClient.get('/roles/users', { params: { q } });
+    return res.data;
+  },
+
+  async registerRoleUser(payload: { name: string; email: string; role_id: number }): Promise<any> {
+    const res = await apiClient.post('/roles/users', payload);
+    return res.data;
+  },
+
+  async assignRole(userId: string, roleId: number): Promise<any> {
+    const res = await apiClient.put(`/roles/users/${userId}`, { role_id: roleId });
+    return res.data;
+  },
+
   // Proyectos
   async getProyectos(params?: {
     estado?: string;
@@ -63,7 +127,7 @@ export const api = {
     return res.data;
   },
 
-  // Postulaciones
+  // Postulaciones (KIR-16 & KIR-17)
   async validateAge(payload: ValidarEdadPayload): Promise<ValidarEdadResponse> {
     const res = await apiClient.post<ValidarEdadResponse>('/postulaciones/validar-edad', payload);
     return res.data;
@@ -187,5 +251,9 @@ export const api = {
   async getMetrics(): Promise<DashboardMetrics> {
     const res = await apiClient.get<DashboardMetrics>('/metrics');
     return res.data;
+  },
+
+  async getDashboardMetrics(): Promise<DashboardMetrics> {
+    return this.getMetrics();
   },
 };

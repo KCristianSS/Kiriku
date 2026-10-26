@@ -1,5 +1,6 @@
 import express, { Request, Response, Router } from 'express';
-import { query } from './supabase';
+import { query, supabaseAdmin } from './supabase';
+import { authenticate, requirePermission } from './authorization';
 
 const router: Router = express.Router();
 
@@ -16,6 +17,59 @@ function calculateAge(birthDateString: string): number {
 }
 
 // -------------------------------------------------------------
+// 0. AUTENTICACIÓN ADMINISTRATIVA (LOGIN REAL)
+// -------------------------------------------------------------
+router.post('/auth/login', async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Correo y contraseña son obligatorios' });
+    }
+
+    const cleanEmail = String(email).trim().toLowerCase();
+    const rows = await query<{ id: string; nombre: string; email: string; password: string; rol: string }>(
+      'SELECT id, nombre, email, password, rol FROM public.usuarios WHERE LOWER(email) = $1 LIMIT 1',
+      [cleanEmail]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'No existe una cuenta registrada con este correo' });
+    }
+
+    const user = rows[0];
+    if (user.password !== password) {
+      return res.status(401).json({ error: 'Contraseña incorrecta. Por favor verifica tus credenciales.' });
+    }
+
+    res.json({
+      token: user.id,
+      user: {
+        id: user.id,
+        nombre: user.nombre,
+        email: user.email,
+        rol: user.rol,
+      },
+      message: 'Inicio de sesión exitoso',
+    });
+  } catch (err: any) {
+    console.error('Error in login:', err);
+    res.status(500).json({ error: 'Error al procesar el inicio de sesión' });
+  }
+});
+
+router.get('/auth/demo-users', async (_req: Request, res: Response) => {
+  try {
+    const rows = await query<{ id: string; nombre: string; email: string; rol: string }>(
+      'SELECT id, nombre, email, rol FROM public.usuarios WHERE activo = TRUE ORDER BY id ASC LIMIT 6'
+    );
+    res.json(rows);
+  } catch (err: any) {
+    console.error('Error fetching demo users:', err);
+    res.json([]);
+  }
+});
+
+// -------------------------------------------------------------
 // 1. ORGANIZACIONES
 // -------------------------------------------------------------
 router.get('/organizaciones', async (req: Request, res: Response) => {
@@ -28,7 +82,7 @@ router.get('/organizaciones', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/organizaciones', async (req: Request, res: Response) => {
+router.post('/organizaciones', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
   try {
     const { nombre, tipo, contacto_nombre, contacto_email, contacto_telefono } = req.body;
     if (!nombre || !tipo) {
@@ -216,7 +270,7 @@ router.post('/proyectos', async (req: Request, res: Response) => {
 });
 
 // Revisión de proyectos: aprobar o rechazar con motivo
-router.patch('/proyectos/:id/revision', async (req: Request, res: Response) => {
+router.patch('/proyectos/:id/revision', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { estado, motivo_rechazo } = req.body;
@@ -561,7 +615,7 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
 });
 
 // Banco de Postulantes & Lista de postulaciones para Administradores
-router.get('/postulaciones', async (req: Request, res: Response) => {
+router.get('/postulaciones', authenticate, requirePermission('applications.read'), async (req: Request, res: Response) => {
   try {
     const { estado, proyecto_id, reasignacion, reenganche, q } = req.query;
 
@@ -960,6 +1014,254 @@ router.get('/metrics', async (req: Request, res: Response) => {
 });
 
 // -------------------------------------------------------------
+// 5.5. ROLES Y GESTIÓN DE USUARIOS (KIR-11 & KIR-6)
+// -------------------------------------------------------------
+router.get('/roles/permissions', authenticate, requirePermission('roles.manage'), async (_req, res) => {
+  try {
+    res.json(await query('SELECT id, code, name, description FROM permissions ORDER BY name'));
+  } catch (error) {
+    console.error('Error obteniendo permisos:', error);
+    res.status(500).json({ error: 'No se pudieron obtener los permisos' });
+  }
+});
+
+router.get('/roles/users', authenticate, requirePermission('users.manage_roles'), async (req, res) => {
+  try {
+    const search = String(req.query.q || '').trim();
+    const users = await query(
+      `SELECT 
+         COALESCE(pu.id, u.id) AS id,
+         COALESCE(pu.email, u.email) AS email,
+         COALESCE(pu.nombre, (u.raw_user_meta_data->>'full_name'), 'Usuario') AS nombre,
+         COALESCE(json_agg(json_build_object('id', r.id, 'code', r.code, 'name', r.name))
+           FILTER (WHERE r.id IS NOT NULL), '[]') AS roles
+       FROM public.usuarios pu
+       FULL OUTER JOIN auth.users u ON u.id = pu.id
+       LEFT JOIN user_roles ur ON ur.user_id = COALESCE(pu.id, u.id)
+       LEFT JOIN roles r ON r.id = ur.role_id
+       WHERE ($1 = '' OR COALESCE(pu.email, u.email) ILIKE '%' || $1 || '%' OR COALESCE(pu.nombre, '') ILIKE '%' || $1 || '%')
+       GROUP BY pu.id, u.id, pu.email, u.email, pu.nombre, u.raw_user_meta_data
+       ORDER BY COALESCE(pu.email, u.email) LIMIT 50`,
+      [search]
+    );
+    res.json(users);
+  } catch (error) {
+    console.error('Error obteniendo usuarios:', error);
+    res.status(500).json({ error: 'No se pudieron obtener los usuarios de Supabase Auth' });
+  }
+});
+
+router.post('/roles/users', authenticate, requirePermission('users.manage_roles'), async (req, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const roleId = Number(req.body?.role_id);
+
+  if (name.length < 2 || name.length > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !Number.isInteger(roleId) || roleId < 1) {
+    return res.status(400).json({ error: 'Nombre (mínimo 2 letras), correo válido y rol obligatorio son requeridos' });
+  }
+
+  try {
+    const roles = await query('SELECT id FROM roles WHERE id = $1 AND active = TRUE', [roleId]);
+    if (!roles.length) {
+      return res.status(400).json({ error: 'Selecciona un rol activo válido' });
+    }
+
+    let createdUserId: string | null = null;
+    let createdEmail: string = email;
+
+    // Intentar invitación a través de Supabase Auth Admin si está disponible
+    if (supabaseAdmin) {
+      try {
+        const { data, error } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+          data: { full_name: name },
+        });
+        if (data?.user) {
+          createdUserId = data.user.id;
+          createdEmail = data.user.email || email;
+        } else if (error) {
+          const isConflict = /already|registered|exists/i.test(error.message);
+          if (isConflict) {
+            return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
+          }
+        }
+      } catch (adminErr) {
+        console.warn('supabaseAdmin error, falling back to direct auth.users creation:', adminErr);
+      }
+    }
+
+    // Fallback: si supabaseAdmin no está configurado o falló, crear usuario directamente en auth.users
+    if (!createdUserId) {
+      const existing = await query('SELECT id FROM auth.users WHERE LOWER(email) = $1', [email]);
+      if (existing.length > 0) {
+        return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
+      }
+
+      const inserted = await query<{ id: string; email: string }>(
+        `INSERT INTO auth.users (
+          id, aud, role, email, raw_user_meta_data, raw_app_meta_data, created_at, updated_at
+        ) VALUES (
+          gen_random_uuid(), 'authenticated', 'authenticated', $1,
+          json_build_object('full_name', $2), json_build_object('provider', 'email', 'providers', array['email']),
+          NOW(), NOW()
+        ) RETURNING id, email`,
+        [email, name]
+      );
+      createdUserId = inserted[0].id;
+      createdEmail = inserted[0].email;
+    }
+
+    // Asignar rol en user_roles
+    await query(
+      `INSERT INTO user_roles (user_id, role_id, assigned_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id, role_id) DO NOTHING`,
+      [createdUserId, roleId, (req as any).userId || null]
+    );
+
+    // Registro opcional en public.usuarios si existe
+    try {
+      await query(
+        `INSERT INTO usuarios (nombre, email, rol, activo, created_at)
+         VALUES ($1, $2, (SELECT code FROM roles WHERE id = $3), TRUE, NOW())
+         ON CONFLICT DO NOTHING`,
+        [name, createdEmail, roleId]
+      );
+    } catch {
+      // Ignorar si public.usuarios tiene otro formato
+    }
+
+    res.status(201).json({
+      id: createdUserId,
+      email: createdEmail,
+      message: 'Usuario registrado exitosamente y rol asignado.',
+    });
+  } catch (error: any) {
+    console.error('Error registrando usuario:', error);
+    res.status(500).json({ error: 'No se pudo registrar el usuario' });
+  }
+});
+
+router.get('/roles', authenticate, requirePermission('roles.manage'), async (_req, res) => {
+  try {
+    res.json(
+      await query(
+        `SELECT r.id, r.code, r.name, r.description, r.active,
+          COALESCE(json_agg(json_build_object('id', p.id, 'code', p.code, 'name', p.name))
+          FILTER (WHERE p.id IS NOT NULL), '[]') AS permissions
+         FROM roles r LEFT JOIN role_permissions rp ON rp.role_id = r.id
+         LEFT JOIN permissions p ON p.id = rp.permission_id
+         GROUP BY r.id ORDER BY r.name`
+      )
+    );
+  } catch (error) {
+    console.error('Error obteniendo roles:', error);
+    res.status(500).json({ error: 'No se pudieron obtener los roles' });
+  }
+});
+
+router.post('/roles', authenticate, requirePermission('roles.manage'), async (req, res) => {
+  const { code, name, description = '', permission_codes = [] } = req.body || {};
+  if (!/^[a-z][a-z0-9_]{2,49}$/.test(code || '') || !name?.trim() || !Array.isArray(permission_codes)) {
+    return res.status(400).json({ error: 'Código, nombre y lista de permisos válidos son obligatorios' });
+  }
+  try {
+    const role = (
+      await query<{ id: number }>(
+        'INSERT INTO roles (code, name, description) VALUES ($1, $2, $3) RETURNING id',
+        [code, name.trim(), String(description).trim()]
+      )
+    )[0];
+    await query(
+      `INSERT INTO role_permissions (role_id, permission_id)
+       SELECT $1, id FROM permissions WHERE code = ANY($2::text[]) ON CONFLICT DO NOTHING`,
+      [role.id, permission_codes]
+    );
+    res.status(201).json({ id: role.id, code, name: name.trim() });
+  } catch (error: any) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Ya existe un rol con ese código' });
+    console.error('Error creando rol:', error);
+    res.status(500).json({ error: 'No se pudo crear el rol' });
+  }
+});
+
+router.patch('/roles/:id', authenticate, requirePermission('roles.manage'), async (req, res) => {
+  const roleId = Number(req.params.id);
+  const { name, description = '', active = true, permission_codes = [] } = req.body || {};
+  if (!Number.isInteger(roleId) || roleId < 1 || !name?.trim() || !Array.isArray(permission_codes)) {
+    return res.status(400).json({ error: 'Datos del rol inválidos' });
+  }
+  try {
+    const updated = await query(
+      'UPDATE roles SET name = $2, description = $3, active = $4 WHERE id = $1 RETURNING id',
+      [roleId, name.trim(), String(description).trim(), Boolean(active)]
+    );
+    if (!updated.length) return res.status(404).json({ error: 'Rol no encontrado' });
+    await query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
+    await query(
+      `INSERT INTO role_permissions (role_id, permission_id)
+       SELECT $1, id FROM permissions WHERE code = ANY($2::text[]) ON CONFLICT DO NOTHING`,
+      [roleId, permission_codes]
+    );
+    res.json({ message: 'Rol actualizado' });
+  } catch (error) {
+    console.error('Error actualizando rol:', error);
+    res.status(500).json({ error: 'No se pudo actualizar el rol' });
+  }
+});
+
+router.put('/roles/users/:userId', authenticate, requirePermission('users.manage_roles'), async (req, res) => {
+  const { userId } = req.params;
+  const roleId = Number(req.body?.role_id);
+  if (!/^[0-9a-f-]{36}$/i.test(userId) || !Number.isInteger(roleId) || roleId < 1) {
+    return res.status(400).json({ error: 'Usuario o rol inválido' });
+  }
+  try {
+    const role = await query<{ id: number; code: string; name: string }>(
+      'SELECT id, code, name FROM roles WHERE id = $1 AND active = TRUE',
+      [roleId]
+    );
+    const user = await query<{ id: string; email: string }>(
+      'SELECT id, email FROM auth.users WHERE id = $1',
+      [userId]
+    );
+    if (!role.length || !user.length) return res.status(404).json({ error: 'Usuario o rol no encontrado' });
+
+    // Validar assigned_by: solo pasar el UUID si realmente existe en auth.users
+    const adminId = (req as any).userId;
+    let assignedBy: string | null = null;
+    if (adminId && /^[0-9a-f-]{36}$/i.test(adminId)) {
+      const validAdmin = await query('SELECT id FROM auth.users WHERE id = $1', [adminId]);
+      if (validAdmin.length > 0) assignedBy = adminId;
+    }
+
+    // Actualizar user_roles
+    await query('DELETE FROM user_roles WHERE user_id = $1', [userId]);
+    await query('INSERT INTO user_roles (user_id, role_id, assigned_by) VALUES ($1, $2, $3)', [
+      userId,
+      roleId,
+      assignedBy,
+    ]);
+
+    // Actualizar sincronizadamente en public.usuarios
+    try {
+      await query(
+        `UPDATE public.usuarios 
+         SET rol = $1, updated_at = NOW() 
+         WHERE id = $2 OR LOWER(email) = LOWER($3)`,
+        [role[0].code, userId, user[0].email]
+      );
+    } catch (pubErr) {
+      console.warn('Error updating public.usuarios:', pubErr);
+    }
+
+    res.json({ message: `Rol "${role[0].name}" asignado correctamente al usuario ${user[0].email}` });
+  } catch (error) {
+    console.error('Error asignando rol:', error);
+    res.status(500).json({ error: 'No se pudo asignar el rol' });
+  }
+});
+
+// -------------------------------------------------------------
 // 6. GESTIÓN DE IMÁGENES / ENLACES ALMACENADOS EN BASE DE DATOS
 // -------------------------------------------------------------
 router.get('/imagenes/:clave', async (req: Request, res: Response) => {
@@ -995,7 +1297,7 @@ router.get('/imagenes/:clave', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/imagenes', async (req: Request, res: Response) => {
+router.get('/imagenes', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
   try {
     const rows = await query(
       'SELECT id, clave, nombre, url, tipo_mime, created_at FROM imagenes ORDER BY created_at DESC'
@@ -1007,7 +1309,7 @@ router.get('/imagenes', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/imagenes', async (req: Request, res: Response) => {
+router.post('/imagenes', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
   try {
     const { clave, nombre, url, tipo_mime } = req.body;
 
