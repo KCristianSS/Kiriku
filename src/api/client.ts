@@ -5,6 +5,8 @@ import type {
   Organizacion,
   Postulacion,
   Postulante,
+  PostulanteBancoItem,
+  PostulanteMetricasResumen,
   EvaluacionEtapa,
   Donacion,
   CreatePostulantePayload,
@@ -15,6 +17,7 @@ import type {
   CreateDonationPayload,
   DashboardMetrics,
 } from '../types';
+
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -182,15 +185,25 @@ export const api = {
     return res.data;
   },
 
-  async getApplicantsPool(params?: { q?: string; profesion?: string }): Promise<
-    Array<
-      Postulante & {
-        total_postulaciones: number;
-        ultima_postulacion?: string;
-      }
-    >
-  > {
-    const res = await apiClient.get('/postulantes', { params });
+  // KIR-18: Gestión del Banco de Postulantes por Perfil
+  async getApplicantsPool(params?: {
+    q?: string;
+    profesion?: string;
+    estado?: string;
+    proyecto_id?: number | string;
+    ordenar?: string;
+  }): Promise<PostulanteBancoItem[]> {
+    const res = await apiClient.get<PostulanteBancoItem[]>('/postulantes', { params });
+    return res.data;
+  },
+
+  async getPostulantePerfil(id: number | string): Promise<any> {
+    const res = await apiClient.get(`/postulantes/${id}`);
+    return res.data;
+  },
+
+  async getPostulantesMetricas(): Promise<PostulanteMetricasResumen> {
+    const res = await apiClient.get<PostulanteMetricasResumen>('/postulantes/metricas/resumen');
     return res.data;
   },
 

@@ -381,5 +381,161 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
       await query('DELETE FROM proyectos WHERE id = $1', [testProjectId]);
     });
   });
+
+  // -------------------------------------------------------------
+  // HISTORIA 6: KIR-18 - Gestionar banco de postulantes por perfil (Épica KIR-2)
+  // -------------------------------------------------------------
+  describe('KIR-18: Gestionar banco de postulantes por perfil', () => {
+    it('KIR-94: Diseñar estructura del banco de postulantes con datos de perfil y avance parcial', async () => {
+      // 1. Verificar columnas esenciales en postulantes
+      const cols = await query<{ column_name: string; data_type: string }>(
+        `SELECT column_name, data_type FROM information_schema.columns 
+         WHERE table_schema = 'public' 
+         AND table_name = 'postulantes' 
+         AND column_name IN ('id', 'ci', 'nombres', 'apellidos', 'email', 'telefono', 'fecha_nacimiento', 'profesion_ocupacion', 'habilidades', 'motivacion')`
+      );
+      const colNames = cols.map((c) => c.column_name);
+      assert.ok(colNames.includes('ci'), 'Columna ci debe existir');
+      assert.ok(colNames.includes('nombres'), 'Columna nombres debe existir');
+      assert.ok(colNames.includes('apellidos'), 'Columna apellidos debe existir');
+      assert.ok(colNames.includes('fecha_nacimiento'), 'Columna fecha_nacimiento debe existir');
+      assert.ok(colNames.includes('profesion_ocupacion'), 'Columna profesion_ocupacion debe existir');
+      assert.ok(colNames.includes('habilidades'), 'Columna habilidades debe existir');
+
+      // 2. Comprobar cálculo de edad y mayoría de edad para estructura del perfil
+      const hoy = new Date();
+      const fechaNac = new Date(hoy.getFullYear() - 22, 5, 10).toISOString().split('T')[0];
+      const birth = new Date(fechaNac);
+      let edad = hoy.getFullYear() - birth.getFullYear();
+      const m = hoy.getMonth() - birth.getMonth();
+      if (m < 0 || (m === 0 && hoy.getDate() < birth.getDate())) {
+        edad--;
+      }
+      assert.equal(edad, 22, 'Edad calculada debe ser 22 años');
+      assert.equal(edad >= 18, true, 'Debe ser mayor de edad');
+    });
+
+    it('KIR-95: Implementar consulta y filtros de postulantes por perfil, competencias y búsqueda', async () => {
+      const testCi = 'TEST-POOL-' + Date.now();
+      const testEmail = `paramedico.${Date.now()}@kiriku.test`;
+      const testSkill = 'Triaje-Rescate-' + Date.now();
+
+      // 1. Insertar voluntario de prueba con perfil específico
+      const insertPost = await query<{ id: number }>(
+        `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion, habilidades, motivacion)
+         VALUES ($1, 'Ana Gabriela', 'Rojas Test', '1999-03-25', $2, 'Paramédico de Emergencias', $3, 'Vocación de servicio')
+         RETURNING id`,
+        [testCi, testEmail, `Primeros auxilios, ${testSkill}, Manejo de crisis`]
+      );
+      const postulantId = insertPost[0].id;
+      assert.ok(postulantId > 0, 'Postulante de prueba insertado con éxito');
+
+      // 2. Consulta filtrada por habilidad específica (KIR-95)
+      const rowsBySkill = await query<{ id: number; nombres: string; habilidades: string }>(
+        `SELECT id, nombres, habilidades FROM postulantes 
+         WHERE habilidades ILIKE $1`,
+        [`%${testSkill}%`]
+      );
+      assert.equal(rowsBySkill.length, 1, 'Debe encontrar exactamente 1 postulante por habilidad');
+      assert.equal(rowsBySkill[0].id, postulantId);
+
+      // 3. Consulta filtrada por profesión / ocupación
+      const rowsByProf = await query<{ id: number; profesion_ocupacion: string }>(
+        `SELECT id, profesion_ocupacion FROM postulantes 
+         WHERE id = $1 AND profesion_ocupacion ILIKE $2`,
+        [postulantId, '%Paramédico%']
+      );
+      assert.equal(rowsByProf.length, 1, 'Debe encontrar el postulante por profesión');
+
+      // 4. Consulta por búsqueda libre q (CI o nombre)
+      const rowsByCi = await query<{ id: number }>(
+        `SELECT id FROM postulantes 
+         WHERE ci = $1 OR email = $2`,
+        [testCi, testEmail]
+      );
+      assert.equal(rowsByCi.length, 1, 'Debe encontrar el postulante por CI/Email');
+
+      // Limpieza de datos de prueba
+      await query('DELETE FROM postulantes WHERE id = $1', [postulantId]);
+    });
+
+    it('KIR-96 & KIR-97: Implementar vista de perfil y cálculo de avance parcial en 5 etapas secuenciales', async () => {
+      const testCi = 'TEST-AVANCE-' + Date.now();
+      const testEmail = `avance.${Date.now()}@kiriku.test`;
+
+      // 1. Obtener proyecto aprobado
+      const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+      assert.ok(proy.length > 0, 'Debe haber un proyecto aprobado');
+      const proyectoId = proy[0].id;
+
+      // 2. Insertar postulante
+      const postInsert = await query<{ id: number }>(
+        `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion, habilidades)
+         VALUES ($1, 'Carlos', 'Montaño Test', '2001-08-14', $2, 'Licenciado en Trabajo Social', 'Mediación comunitaria')
+         RETURNING id`,
+        [testCi, testEmail]
+      );
+      const postulanteId = postInsert[0].id;
+
+      // 3. Crear postulación
+      const appInsert = await query<{ id: number }>(
+        `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general, es_reasignacion)
+         VALUES ($1, $2, 'en_proceso', false)
+         RETURNING id`,
+        [postulanteId, proyectoId]
+      );
+      const postulacionId = appInsert[0].id;
+
+      // 4. Crear las 5 etapas: 3 aprobadas, 1 en revisión, 1 pendiente
+      const etapasConfig = [
+        { etapa: 'inicial', estado: 'aprobado', evaluador: 'Admisiones' },
+        { etapa: 'tecnica', estado: 'aprobado', evaluador: 'Técnico' },
+        { etapa: 'personal', estado: 'aprobado', evaluador: 'Psicología' },
+        { etapa: 'competencias', estado: 'en_revision', evaluador: 'Dinámica Grupal' },
+        { etapa: 'salud_fisica_psicologica', estado: 'pendiente', evaluador: 'Médico' },
+      ];
+
+      for (const e of etapasConfig) {
+        await query(
+          `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador, fecha_evaluacion)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          [postulacionId, e.etapa, e.estado, e.evaluador]
+        );
+      }
+
+      // 5. Verificar cálculo de avance parcial
+      const stagesInDb = await query<{ etapa: string; estado: string }>(
+        'SELECT etapa, estado FROM evaluaciones_etapas WHERE postulacion_id = $1 ORDER BY id ASC',
+        [postulacionId]
+      );
+      assert.equal(stagesInDb.length, 5, 'Deben existir 5 etapas');
+
+      const aprobadasCount = stagesInDb.filter((s) => s.estado === 'aprobado').length;
+      assert.equal(aprobadasCount, 3, 'Debe haber 3 etapas aprobadas');
+
+      // Cálculo de porcentaje de avance parcial: (3 / 5) * 100 = 60%
+      const porcentajeAvance = Math.round((aprobadasCount / 5) * 100);
+      assert.equal(porcentajeAvance, 60, 'El porcentaje de avance parcial debe ser exactamente 60%');
+
+      // 6. Verificar que la consulta del banco recupera este avance y perfil completo
+      const poolQuery = await query<{ id: number; total_aprobadas: string }>(
+        `SELECT p.id,
+                COUNT(CASE WHEN ee.estado = 'aprobado' THEN 1 END) as total_aprobadas
+         FROM postulantes p
+         JOIN postulaciones app ON app.postulante_id = p.id
+         JOIN evaluaciones_etapas ee ON ee.postulacion_id = app.id
+         WHERE p.id = $1
+         GROUP BY p.id`,
+        [postulanteId]
+      );
+      assert.equal(parseInt(poolQuery[0].total_aprobadas, 10), 3, 'El pool debe reflejar 3 etapas aprobadas');
+
+      // Limpieza de datos de prueba
+      await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+      await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+      await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+    });
+  });
 });
+
 

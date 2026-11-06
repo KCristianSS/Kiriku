@@ -734,39 +734,294 @@ router.get('/postulaciones', authenticate, requirePermission('applications.read'
   }
 });
 
-// Banco de postulantes único
+// -------------------------------------------------------------
+// BANCO DE POSTULANTES POR PERFIL (HISTORIA KIR-18: KIR-94, KIR-95, KIR-96, KIR-97)
+// -------------------------------------------------------------
+
+// KIR-96: Métricas y resumen del banco de postulantes
+router.get('/postulantes/metricas/resumen', async (_req: Request, res: Response) => {
+  try {
+    const totalRow = await query<{ count: string }>('SELECT COUNT(*) as count FROM postulantes');
+    const totalPostulantes = parseInt(totalRow[0]?.count || '0', 10);
+
+    const statsRow = await query<{
+      en_proceso: string;
+      aprobado: string;
+      rechazado: string;
+      reasignacion: string;
+    }>(`
+      SELECT 
+        COUNT(CASE WHEN app.estado_general = 'en_proceso' THEN 1 END) as en_proceso,
+        COUNT(CASE WHEN app.estado_general = 'aprobado' THEN 1 END) as aprobado,
+        COUNT(CASE WHEN app.estado_general = 'rechazado' THEN 1 END) as rechazado,
+        COUNT(CASE WHEN app.es_reasignacion = true THEN 1 END) as reasignacion
+      FROM postulaciones app
+    `);
+
+    // Profesiones únicas para filtrado dinámico
+    const profRows = await query<{ profesion: string }>(`
+      SELECT DISTINCT TRIM(profesion_ocupacion) as profesion 
+      FROM postulantes 
+      WHERE profesion_ocupacion IS NOT NULL AND TRIM(profesion_ocupacion) <> ''
+      ORDER BY profesion ASC
+    `);
+
+    // Promedio de avance general en etapas
+    const avanceRow = await query<{ promedio: string }>(`
+      SELECT AVG(etapas_aprobadas.total * 20.0) as promedio
+      FROM (
+        SELECT postulacion_id, COUNT(CASE WHEN estado = 'aprobado' THEN 1 END) as total
+        FROM evaluaciones_etapas
+        GROUP BY postulacion_id
+      ) etapas_aprobadas
+    `);
+
+    const promedioAvance = Math.round(parseFloat(avanceRow[0]?.promedio || '0'));
+
+    res.json({
+      totalPostulantes,
+      enProceso: parseInt(statsRow[0]?.en_proceso || '0', 10),
+      aprobados: parseInt(statsRow[0]?.aprobado || '0', 10),
+      rechazados: parseInt(statsRow[0]?.rechazado || '0', 10),
+      reasignaciones: parseInt(statsRow[0]?.reasignacion || '0', 10),
+      promedioAvance,
+      profesiones: profRows.map((r) => r.profesion),
+    });
+  } catch (err: any) {
+    console.error('Error fetching postulantes metrics:', err);
+    res.status(500).json({ error: 'Error al consultar métricas del banco de postulantes' });
+  }
+});
+
+// KIR-94 & KIR-95: Consulta, filtros avanzados y avance parcial del banco de postulantes
 router.get('/postulantes', async (req: Request, res: Response) => {
   try {
-    const { q, profesion } = req.query;
+    const { q, profesion, estado, proyecto_id, ordenar } = req.query;
+
     let sql = `
       SELECT p.*,
-             COUNT(app.id) as total_postulaciones,
-             MAX(app.created_at) as ultima_postulacion
+             app.id as postulacion_id,
+             app.estado_general,
+             app.es_reasignacion,
+             app.created_at as fecha_postulacion,
+             app.updated_at as fecha_actualizacion_postulacion,
+             proy.id as proyecto_id,
+             proy.titulo as proyecto_titulo,
+             proy.ubicacion as proyecto_ubicacion,
+             org.nombre as organizacion_nombre,
+             (SELECT COUNT(*) FROM postulaciones WHERE postulante_id = p.id) as total_postulaciones
       FROM postulantes p
-      LEFT JOIN postulaciones app ON app.postulante_id = p.id
+      LEFT JOIN LATERAL (
+        SELECT * FROM postulaciones 
+        WHERE postulante_id = p.id 
+        ORDER BY created_at DESC 
+        LIMIT 1
+      ) app ON true
+      LEFT JOIN proyectos proy ON app.proyecto_id = proy.id
+      LEFT JOIN organizaciones org ON proy.organizacion_id = org.id
       WHERE 1=1
     `;
     const params: any[] = [];
 
-    if (q) {
-      params.push(`%${q}%`);
-      sql += ` AND (p.nombres ILIKE $${params.length} OR p.apellidos ILIKE $${params.length} OR p.ci ILIKE $${params.length} OR p.habilidades ILIKE $${params.length})`;
+    // Filtro de búsqueda general
+    if (q && typeof q === 'string' && q.trim()) {
+      params.push(`%${q.trim()}%`);
+      sql += ` AND (
+        p.nombres ILIKE $${params.length} OR 
+        p.apellidos ILIKE $${params.length} OR 
+        p.ci ILIKE $${params.length} OR 
+        p.email ILIKE $${params.length} OR 
+        p.profesion_ocupacion ILIKE $${params.length} OR 
+        p.habilidades ILIKE $${params.length}
+      )`;
     }
 
-    if (profesion) {
-      params.push(`%${profesion}%`);
+    // Filtro por profesión / ocupación
+    if (profesion && typeof profesion === 'string' && profesion.trim()) {
+      params.push(`%${profesion.trim()}%`);
       sql += ` AND p.profesion_ocupacion ILIKE $${params.length}`;
     }
 
-    sql += ' GROUP BY p.id ORDER BY p.created_at DESC';
+    // Filtro por estado de postulación
+    if (estado && typeof estado === 'string') {
+      if (estado === 'sin_postulacion') {
+        sql += ` AND app.id IS NULL`;
+      } else if (estado === 'reasignacion') {
+        sql += ` AND app.es_reasignacion = true`;
+      } else {
+        params.push(estado);
+        sql += ` AND app.estado_general = $${params.length}`;
+      }
+    }
 
-    const rows = await query(sql, params);
-    res.json(rows);
+    // Filtro por proyecto
+    if (proyecto_id) {
+      params.push(proyecto_id);
+      sql += ` AND app.proyecto_id = $${params.length}`;
+    }
+
+    // Ordenamiento
+    if (ordenar === 'nombre_asc') {
+      sql += ' ORDER BY p.nombres ASC, p.apellidos ASC';
+    } else {
+      sql += ' ORDER BY p.created_at DESC';
+    }
+
+    const rows = await query<any>(sql, params);
+
+    // Obtener las etapas de evaluación para cada postulante con postulación activa
+    const postulacionesIds = rows.map((r: any) => r.postulacion_id).filter(Boolean);
+    let allEtapas: any[] = [];
+    if (postulacionesIds.length > 0) {
+      allEtapas = await query<any>(
+        `SELECT id, postulacion_id, etapa, estado, evaluador, comentarios, fecha_evaluacion
+         FROM evaluaciones_etapas
+         WHERE postulacion_id = ANY($1::int[])
+         ORDER BY 
+           CASE etapa
+             WHEN 'inicial' THEN 1
+             WHEN 'tecnica' THEN 2
+             WHEN 'personal' THEN 3
+             WHEN 'competencias' THEN 4
+             WHEN 'salud_fisica_psicologica' THEN 5
+             ELSE 6
+           END ASC`,
+        [postulacionesIds]
+      );
+    }
+
+    // Agrupar etapas por postulacion_id
+    const etapasPorPostulacion = new Map<number, any[]>();
+    for (const etapa of allEtapas) {
+      const pid = Number(etapa.postulacion_id);
+      if (!etapasPorPostulacion.has(pid)) {
+        etapasPorPostulacion.set(pid, []);
+      }
+      etapasPorPostulacion.get(pid)!.push(etapa);
+    }
+
+    // Estructurar el perfil completo con cálculo de avance parcial
+    let formatted = rows.map((r: any) => {
+      const edad = calculateAge(r.fecha_nacimiento);
+      const pid = r.postulacion_id ? Number(r.postulacion_id) : null;
+      const etapas = pid ? etapasPorPostulacion.get(pid) || [] : [];
+      const etapasAprobadas = etapas.filter((e: any) => e.estado === 'aprobado').length;
+      const porcentajeAvance = etapas.length > 0 ? Math.round((etapasAprobadas / 5) * 100) : 0;
+
+      return {
+        id: r.id,
+        ci: r.ci,
+        nombres: r.nombres,
+        apellidos: r.apellidos,
+        email: r.email,
+        telefono: r.telefono,
+        fecha_nacimiento: r.fecha_nacimiento,
+        edad,
+        es_mayor_edad: edad >= 18,
+        profesion_ocupacion: r.profesion_ocupacion,
+        habilidades: r.habilidades,
+        motivacion: r.motivacion,
+        created_at: r.created_at,
+        total_postulaciones: parseInt(r.total_postulaciones || '0', 10),
+        ultima_postulacion: r.fecha_postulacion,
+        postulacion_id: r.postulacion_id,
+        proyecto_id: r.proyecto_id,
+        proyecto_titulo: r.proyecto_titulo,
+        proyecto_ubicacion: r.proyecto_ubicacion,
+        organizacion_nombre: r.organizacion_nombre,
+        estado_general: r.estado_general || 'sin_postulacion',
+        es_reasignacion: Boolean(r.es_reasignacion),
+        etapas_totales: 5,
+        etapas_aprobadas: etapasAprobadas,
+        porcentaje_avance: porcentajeAvance,
+        etapas,
+      };
+    });
+
+    // Ordenamiento por avance si fue solicitado
+    if (ordenar === 'avance_desc') {
+      formatted.sort((a, b) => b.porcentaje_avance - a.porcentaje_avance);
+    } else if (ordenar === 'avance_asc') {
+      formatted.sort((a, b) => a.porcentaje_avance - b.porcentaje_avance);
+    }
+
+    res.json(formatted);
   } catch (err: any) {
     console.error('Error fetching postulantes pool:', err);
     res.status(500).json({ error: 'Error al consultar banco de postulantes' });
   }
 });
+
+// KIR-96: Detalle de perfil completo y avance parcial de un postulante
+router.get('/postulantes/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const postRows = await query<any>('SELECT * FROM postulantes WHERE id = $1', [id]);
+    if (!postRows.length) {
+      return res.status(404).json({ error: 'Postulante no encontrado' });
+    }
+    const postulante = postRows[0];
+    const edad = calculateAge(postulante.fecha_nacimiento);
+
+    // Obtener historial completo de postulaciones
+    const appRows = await query<any>(
+      `SELECT app.*, 
+              proy.titulo as proyecto_titulo, 
+              proy.ubicacion as proyecto_ubicacion,
+              proy.cupos_disponibles,
+              proy.portada_url as proyecto_portada,
+              org.nombre as organizacion_nombre
+       FROM postulaciones app
+       JOIN proyectos proy ON app.proyecto_id = proy.id
+       LEFT JOIN organizaciones org ON proy.organizacion_id = org.id
+       WHERE app.postulante_id = $1
+       ORDER BY app.created_at DESC`,
+      [id]
+    );
+
+    // Obtener etapas para cada postulación
+    const aplicacionesConEtapas = await Promise.all(
+      appRows.map(async (app: any) => {
+        const etapas = await query<any>(
+          `SELECT * FROM evaluaciones_etapas 
+           WHERE postulacion_id = $1 
+           ORDER BY 
+             CASE etapa
+               WHEN 'inicial' THEN 1
+               WHEN 'tecnica' THEN 2
+               WHEN 'personal' THEN 3
+               WHEN 'competencias' THEN 4
+               WHEN 'salud_fisica_psicologica' THEN 5
+               ELSE 6
+             END ASC`,
+          [app.id]
+        );
+        const aprobadas = etapas.filter((e: any) => e.estado === 'aprobado').length;
+        return {
+          ...app,
+          etapas_totales: 5,
+          etapas_aprobadas: aprobadas,
+          porcentaje_avance: Math.round((aprobadas / 5) * 100),
+          etapas,
+        };
+      })
+    );
+
+    res.json({
+      ...postulante,
+      edad,
+      es_mayor_edad: edad >= 18,
+      postulaciones: aplicacionesConEtapas,
+      total_postulaciones: aplicacionesConEtapas.length,
+      postulacion_activa: aplicacionesConEtapas[0] || null,
+    });
+  } catch (err: any) {
+    console.error('Error fetching postulante profile:', err);
+    res.status(500).json({ error: 'Error al consultar perfil del postulante' });
+  }
+});
+
 
 // Calificar etapa de evaluación
 router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
