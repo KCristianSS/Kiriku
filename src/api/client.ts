@@ -194,6 +194,11 @@ export const api = {
     return res.data;
   },
 
+  async updateApplicant(id: number | string, payload: Partial<Postulante>): Promise<Postulante> {
+    const res = await apiClient.patch<Postulante>(`/postulantes/${id}`, payload);
+    return res.data;
+  },
+
   async updateEvaluationStage(
     id: number | string,
     payload: {
@@ -225,7 +230,13 @@ export const api = {
       es_reenganche?: boolean;
     }
   ): Promise<Postulacion> {
-    return this.manageReasignacion(id, payload);
+    const res = await apiClient.patch<Postulacion>(`/postulaciones/${id}/reenganche`, payload);
+    return res.data;
+  },
+
+  async restartTechnicalStage(id: number | string): Promise<EvaluacionEtapa> {
+    const res = await apiClient.post<EvaluacionEtapa>(`/postulaciones/${id}/reiniciar-etapa-tecnica`);
+    return res.data;
   },
 
   async updateApplicationStatus(
