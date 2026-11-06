@@ -1,6 +1,7 @@
 import express, { Request, Response, Router } from 'express';
 import { query, supabaseAdmin } from './supabase';
 import { authenticate, requirePermission } from './authorization';
+import { resolveWorkflowChanges } from './application-workflows';
 
 const router: Router = express.Router();
 
@@ -735,7 +736,7 @@ router.get('/postulaciones', authenticate, requirePermission('applications.read'
 });
 
 // Banco de postulantes único
-router.get('/postulantes', async (req: Request, res: Response) => {
+router.get('/postulantes', authenticate, requirePermission('applications.read'), async (req: Request, res: Response) => {
   try {
     const { q, profesion } = req.query;
     let sql = `
@@ -768,8 +769,36 @@ router.get('/postulantes', async (req: Request, res: Response) => {
   }
 });
 
+// Actualizar los datos de contacto y perfil de un voluntario (KIR-91).
+router.patch('/postulantes/:id', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { nombres, apellidos, email, telefono, ci, fecha_nacimiento, profesion_ocupacion, habilidades, motivacion } = req.body || {};
+    if (!nombres?.trim() || !apellidos?.trim() || !email?.trim() || !ci?.trim() || !fecha_nacimiento) {
+      return res.status(400).json({ error: 'Nombres, apellidos, correo, CI y fecha de nacimiento son obligatorios' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      return res.status(400).json({ error: 'El correo electrónico no es válido' });
+    }
+    const conflict = await query('SELECT id FROM postulantes WHERE (LOWER(email) = LOWER($1) OR ci = $2) AND id <> $3 LIMIT 1', [email.trim(), ci.trim(), id]);
+    if (conflict.length) return res.status(409).json({ error: 'El correo o CI ya pertenece a otro postulante' });
+    const rows = await query(
+      `UPDATE postulantes SET nombres = $1, apellidos = $2, email = $3, telefono = $4, ci = $5,
+       fecha_nacimiento = $6, profesion_ocupacion = $7, habilidades = $8, motivacion = $9
+       WHERE id = $10 RETURNING *`,
+      [nombres.trim(), apellidos.trim(), email.trim().toLowerCase(), telefono?.trim() || null, ci.trim(), fecha_nacimiento,
+        profesion_ocupacion?.trim() || null, habilidades?.trim() || null, motivacion?.trim() || null, id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Postulante no encontrado' });
+    res.json(rows[0]);
+  } catch (err: any) {
+    console.error('Error updating postulante:', err);
+    res.status(500).json({ error: 'Error al actualizar los datos del voluntario' });
+  }
+});
+
 // Calificar etapa de evaluación
-router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
+router.patch('/evaluaciones/:id', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { estado, comentarios, evaluador } = req.body;
@@ -827,36 +856,52 @@ router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
   }
 });
 
-// Reasignación de postulante (KIR: Reasignación)
-const handleReasignacion = async (req: Request, res: Response) => {
+// Reasignación y reenganche de voluntarios (KIR-90).
+const handleReasignacion = async (req: Request, res: Response, reenganche = false) => {
   try {
     const { id } = req.params;
     const { nuevo_proyecto_id, es_reasignacion, es_reenganche } = req.body;
     const isReassigned = es_reasignacion !== undefined ? es_reasignacion : (es_reenganche !== undefined ? es_reenganche : true);
+    const changes = resolveWorkflowChanges(reenganche ? 'reenganche' : 'reasignacion', {
+      enabled: Boolean(nuevo_proyecto_id) || Boolean(isReassigned),
+      projectChanged: Boolean(nuevo_proyecto_id),
+    });
 
     if (nuevo_proyecto_id) {
-      // Reasignar a otro proyecto
+      const project = await query('SELECT id FROM proyectos WHERE id = $1 AND estado = \'aprobado\'', [nuevo_proyecto_id]);
+      if (!project.length) return res.status(400).json({ error: 'El nuevo proyecto no existe o no está aprobado' });
+    }
+
+    if (nuevo_proyecto_id) {
       const rows = await query(
         `UPDATE postulaciones 
          SET proyecto_id = $1, 
              es_reasignacion = true, 
-             estado_general = 'reasignacion',
+             estado_general = $2,
              updated_at = NOW() 
-         WHERE id = $2 
+         WHERE id = $3 
          RETURNING *`,
-        [nuevo_proyecto_id, id]
+        [nuevo_proyecto_id, changes.status, id]
       );
+      if (!rows.length) return res.status(404).json({ error: 'Postulación no encontrada' });
+      if (changes.restartTechnicalStage) {
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'pendiente', comentarios = 'Etapa reiniciada por reenganche a un nuevo proyecto.', fecha_evaluacion = NOW()
+           WHERE postulacion_id = $1 AND etapa = 'tecnica'`, [id]
+        );
+      }
       return res.json(rows[0]);
     } else {
       const rows = await query(
         `UPDATE postulaciones 
          SET es_reasignacion = $1, 
-             estado_general = CASE WHEN $1 THEN 'reasignacion' ELSE estado_general END,
+             estado_general = CASE WHEN $1 THEN $2 ELSE estado_general END,
              updated_at = NOW() 
-         WHERE id = $2 
+         WHERE id = $3 
          RETURNING *`,
-        [isReassigned, id]
+        [changes.isReassigned, changes.status, id]
       );
+      if (!rows.length) return res.status(404).json({ error: 'Postulación no encontrada' });
       return res.json(rows[0]);
     }
   } catch (err: any) {
@@ -865,11 +910,30 @@ const handleReasignacion = async (req: Request, res: Response) => {
   }
 };
 
-router.patch('/postulaciones/:id/reasignacion', handleReasignacion);
-router.patch('/postulaciones/:id/reenganche', handleReasignacion);
+router.patch('/postulaciones/:id/reasignacion', authenticate, requirePermission('applications.manage'), (req, res) => handleReasignacion(req, res));
+router.patch('/postulaciones/:id/reenganche', authenticate, requirePermission('applications.manage'), (req, res) => handleReasignacion(req, res, true));
+
+// Reiniciar únicamente la etapa técnica al incorporar al voluntario a otro proyecto (KIR-92).
+router.post('/postulaciones/:id/reiniciar-etapa-tecnica', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const app = await query('SELECT id, estado_general FROM postulaciones WHERE id = $1', [id]);
+    if (!app.length) return res.status(404).json({ error: 'Postulación no encontrada' });
+    const rows = await query(
+      `UPDATE evaluaciones_etapas SET estado = 'pendiente', comentarios = 'Etapa técnica reiniciada para evaluar al voluntario en un nuevo proyecto.', fecha_evaluacion = NOW()
+       WHERE postulacion_id = $1 AND etapa = 'tecnica' RETURNING *`, [id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'No se encontró la etapa técnica de esta postulación' });
+    await query(`UPDATE postulaciones SET estado_general = 'en_proceso', updated_at = NOW() WHERE id = $1`, [id]);
+    res.json(rows[0]);
+  } catch (err: any) {
+    console.error('Error reiniciando etapa técnica:', err);
+    res.status(500).json({ error: 'Error al reiniciar la etapa técnica' });
+  }
+});
 
 // Actualizar estado general de la postulación
-router.patch('/postulaciones/:id/status', async (req: Request, res: Response) => {
+router.patch('/postulaciones/:id/status', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { estado_general } = req.body;
