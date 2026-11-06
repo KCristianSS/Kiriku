@@ -44,6 +44,35 @@ export interface Postulante {
   created_at?: string;
 }
 
+// KIR-94: Estructura del banco de postulantes con datos de perfil y avance parcial
+export interface PostulanteBancoItem extends Postulante {
+  edad: number;
+  es_mayor_edad: boolean;
+  total_postulaciones: number;
+  ultima_postulacion?: string;
+  postulacion_id?: number | string | null;
+  proyecto_id?: number | string | null;
+  proyecto_titulo?: string | null;
+  proyecto_ubicacion?: string | null;
+  organizacion_nombre?: string | null;
+  estado_general?: PostulacionEstado | 'sin_postulacion' | string;
+  es_reasignacion?: boolean;
+  etapas_totales: number;
+  etapas_aprobadas: number;
+  porcentaje_avance: number;
+  etapas: EvaluacionEtapa[];
+}
+
+export interface PostulanteMetricasResumen {
+  totalPostulantes: number;
+  enProceso: number;
+  aprobados: number;
+  rechazados: number;
+  reasignaciones: number;
+  promedioAvance: number;
+  profesiones: string[];
+}
+
 export type PostulacionEstado = 'en_proceso' | 'aprobado' | 'rechazado' | 'reasignacion' | 'reenganche';
 
 export type EtapaNombre =
