@@ -94,6 +94,42 @@ export interface EvaluacionEtapa {
   fecha_evaluacion?: string | null;
 }
 
+// KIR-70: Estructura de evaluación inicial
+export interface EvaluacionInicialItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  postulacion_fecha: string;
+  postulacion_estado: PostulacionEstado;
+  postulante: Postulante & {
+    edad: number;
+    es_mayor_edad: boolean;
+  };
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    es_mayor_edad: boolean;
+    organizacion_nombre?: string | null;
+  };
+}
+
+export interface RegistrarEvaluacionInicialPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado' | 'en_revision';
+  evaluador: string;
+  comentarios: string;
+  criterios?: {
+    mayoria_edad_verificada?: boolean;
+    identidad_ci_valida?: boolean;
+    carta_motivacion_apta?: boolean;
+    disponibilidad_confirmada?: boolean;
+  };
+}
+
+
 export interface Postulacion {
   id: number | string;
   postulante_id: number | string;
