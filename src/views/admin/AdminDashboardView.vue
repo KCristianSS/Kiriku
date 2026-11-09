@@ -181,66 +181,87 @@ onMounted(() => {
     </div>
 
     <!-- Quick Navigation to Admin Modules -->
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
       <router-link
-        to="/admin/revision"
-        class="bg-white rounded-2xl border border-stone-200 hover:border-[#289EAB] p-6 shadow-xs transition-all flex items-center justify-between group"
+        to="/admin/evaluacion-inicial"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#0D9488] p-5 shadow-xs transition-all flex items-center justify-between group"
       >
-        <div class="flex items-center gap-4">
-          <div class="w-12 h-12 bg-[#E8F6F8] text-[#289EAB] rounded-xl flex items-center justify-center">
-            <CheckSquare class="w-6 h-6" />
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-teal-50 text-teal-600 rounded-xl flex items-center justify-center shrink-0">
+            <UserCheck class="w-5 h-5" />
           </div>
           <div>
-            <h3 class="text-base font-bold text-stone-900 group-hover:text-[#289EAB] transition-colors">
-              Revisión de Proyectos
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-teal-700 transition-colors">
+              Evaluación Inicial
             </h3>
-            <p class="text-xs text-stone-500 mt-0.5">
-              Aprobar o rechazar propuestas de iniciativas con motivo formal.
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Validar mayoría de edad (+18) y requisitos para etapa técnica (KIR-24).
             </p>
           </div>
         </div>
-        <ArrowRight class="w-5 h-5 text-stone-400 group-hover:text-[#289EAB] group-hover:translate-x-1 transition-all" />
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-teal-600 group-hover:translate-x-1 transition-all shrink-0" />
+      </router-link>
+
+      <router-link
+        to="/admin/revision"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#289EAB] p-5 shadow-xs transition-all flex items-center justify-between group"
+      >
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-[#E8F6F8] text-[#289EAB] rounded-xl flex items-center justify-center shrink-0">
+            <CheckSquare class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-[#289EAB] transition-colors">
+              Revisión Proyectos
+            </h3>
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Aprobar o rechazar propuestas con motivo formal (KIR-21).
+            </p>
+          </div>
+        </div>
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#289EAB] group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
 
       <router-link
         to="/admin/postulantes"
-        class="bg-white rounded-2xl border border-stone-200 hover:border-[#F58F38] p-6 shadow-xs transition-all flex items-center justify-between group"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#F58F38] p-5 shadow-xs transition-all flex items-center justify-between group"
       >
-        <div class="flex items-center gap-4">
-          <div class="w-12 h-12 bg-[#FEF4EC] text-[#F58F38] rounded-xl flex items-center justify-center">
-            <Users class="w-6 h-6" />
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-[#FEF4EC] text-[#F58F38] rounded-xl flex items-center justify-center shrink-0">
+            <Users class="w-5 h-5" />
           </div>
           <div>
-            <h3 class="text-base font-bold text-stone-900 group-hover:text-[#F58F38] transition-colors">
-              Banco de Postulantes
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-[#F58F38] transition-colors">
+              Banco Postulantes
             </h3>
-            <p class="text-xs text-stone-500 mt-0.5">
-              Gestión de postulantes, calificación de etapas y reasignación.
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Seguimiento por perfil y avance de 5 etapas (KIR-18).
             </p>
           </div>
         </div>
-        <ArrowRight class="w-5 h-5 text-stone-400 group-hover:text-[#F58F38] group-hover:translate-x-1 transition-all" />
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#F58F38] group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
 
       <router-link
         to="/admin/roles"
-        class="bg-white rounded-2xl border border-stone-200 hover:border-stone-800 p-6 shadow-xs transition-all flex items-center justify-between group"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-stone-800 p-5 shadow-xs transition-all flex items-center justify-between group"
       >
-        <div class="flex items-center gap-4">
-          <div class="w-12 h-12 bg-stone-100 text-stone-800 rounded-xl flex items-center justify-center">
-            <KeyRound class="w-6 h-6" />
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-stone-100 text-stone-800 rounded-xl flex items-center justify-center shrink-0">
+            <KeyRound class="w-5 h-5" />
           </div>
           <div>
-            <h3 class="text-base font-bold text-stone-900 group-hover:text-stone-800 transition-colors">
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-stone-800 transition-colors">
               Roles y Permisos
             </h3>
-            <p class="text-xs text-stone-500 mt-0.5">
-              Gestión de roles RBAC, registro y asignación de usuarios (RF-01).
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Gestión de roles RBAC y usuarios del sistema (RF-01).
             </p>
           </div>
         </div>
-        <ArrowRight class="w-5 h-5 text-stone-400 group-hover:text-stone-800 group-hover:translate-x-1 transition-all" />
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-stone-800 group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
+
 
       <!-- Swagger Documentation Card -->
       <a
