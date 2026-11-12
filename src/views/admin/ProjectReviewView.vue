@@ -21,6 +21,7 @@ import {
   MessageSquare,
   ExternalLink,
   RotateCcw,
+  Globe,
 } from 'lucide-vue-next';
 
 const projects = ref<Proyecto[]>([]);
@@ -103,7 +104,7 @@ async function confirmApprove() {
     await api.reviewProject(projectToApprove.value.id, {
       estado: 'aprobado',
     });
-    successNotice.value = `¡Proyecto "${projectToApprove.value.titulo}" aprobado con éxito! Ya está disponible en el catálogo público.`;
+    successNotice.value = `¡Proyecto "${projectToApprove.value.titulo}" aprobado con éxito! Ya está listo para ser publicado en el módulo Publicar Proyectos (KIR-22).`;
     projectToApprove.value = null;
     await loadProjects();
   } catch (err: any) {
@@ -430,7 +431,20 @@ onMounted(() => {
                 class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 text-[11px] font-bold border border-emerald-200"
               >
                 <CheckCircle2 class="w-3.5 h-3.5 text-emerald-600" />
-                <span>Aprobado para Catálogo Público</span>
+                <span>Aprobado</span>
+              </span>
+
+              <span
+                v-if="project.estado === 'aprobado'"
+                :class="[
+                  'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border',
+                  project.publicado
+                    ? 'bg-[#E8F6F8] text-[#1E7B85] border-[#289EAB]/30'
+                    : 'bg-amber-50 text-amber-800 border-amber-200'
+                ]"
+              >
+                <Globe class="w-3 h-3" />
+                <span>{{ project.publicado ? 'Publicado en Catálogo' : 'Listo para Publicar' }}</span>
               </span>
 
               <span
@@ -533,8 +547,17 @@ onMounted(() => {
               </button>
             </template>
 
-            <!-- Decided Actions (Re-evaluación) -->
+            <!-- Decided Actions (Re-evaluación & Publicación) -->
             <template v-else>
+              <router-link
+                v-if="project.estado === 'aprobado'"
+                to="/admin/publicacion"
+                class="w-full px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition-all flex items-center justify-center gap-1.5"
+              >
+                <Globe class="w-3.5 h-3.5 text-emerald-600" />
+                <span>{{ project.publicado ? 'Gestionar publicación' : 'Ir a Publicar' }}</span>
+              </router-link>
+
               <button
                 @click="reopenProject(project)"
                 class="w-full px-3.5 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
@@ -570,8 +593,8 @@ onMounted(() => {
           <div class="font-bold text-stone-800">Efectos inmediatos de la aprobación:</div>
           <ul class="list-disc list-inside space-y-1 text-stone-600 text-[11px]">
             <li>El proyecto cambiará su estado a <span class="font-bold text-emerald-700">"aprobado"</span>.</li>
-            <li>Se publicará automáticamente en el <strong>catálogo público de voluntarios</strong>.</li>
-            <li>Quedará habilitado para que los ciudadanos postulen al cupo de {{ projectToApprove.cupos_disponibles }} voluntarios.</li>
+            <li>Quedará habilitado en el módulo <strong>Publicar Proyectos (KIR-22)</strong> para hacerlo visible en el catálogo público.</li>
+            <li>Una vez publicado, los ciudadanos podrán postular al cupo de {{ projectToApprove.cupos_disponibles }} voluntarios.</li>
           </ul>
         </div>
 

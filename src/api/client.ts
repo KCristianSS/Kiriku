@@ -96,11 +96,22 @@ export const api = {
   // Proyectos
   async getProyectos(params?: {
     estado?: string;
+    publicado?: boolean | string;
     ubicacion?: string;
     organizacion_id?: string;
     q?: string;
   }): Promise<Proyecto[]> {
     const res = await apiClient.get<Proyecto[]>('/proyectos', { params });
+    return res.data;
+  },
+
+  // KIR-22: Listado público de proyectos aprobados y publicados (KIR-79 & KIR-80)
+  async getPublishedProjects(params?: {
+    ubicacion?: string;
+    organizacion_id?: string;
+    q?: string;
+  }): Promise<Proyecto[]> {
+    const res = await apiClient.get<Proyecto[]>('/proyectos/publicados', { params });
     return res.data;
   },
 
@@ -114,7 +125,6 @@ export const api = {
     return res.data;
   },
 
-
   async reviewProject(
     id: number | string,
     payload: { estado: 'aprobado' | 'rechazado' | 'pendiente_revision'; motivo_rechazo?: string }
@@ -122,6 +132,16 @@ export const api = {
     const res = await apiClient.patch<Proyecto>(`/proyectos/${id}/revision`, payload);
     return res.data;
   },
+
+  // KIR-22: Servicio de publicación/visibilidad de proyectos aprobados (KIR-79)
+  async publishProject(
+    id: number | string,
+    payload: { publicado: boolean }
+  ): Promise<{ message?: string; proyecto: Proyecto }> {
+    const res = await apiClient.patch(`/proyectos/${id}/publicacion`, payload);
+    return res.data;
+  },
+
 
   // Organizaciones
   async getOrganizaciones(): Promise<Organizacion[]> {
