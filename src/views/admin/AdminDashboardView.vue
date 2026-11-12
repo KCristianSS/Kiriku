@@ -20,6 +20,7 @@ import {
   KeyRound,
   UserPlus,
   LogOut,
+  Globe,
 } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -130,8 +131,10 @@ onMounted(() => {
         <div class="text-2xl font-extrabold text-stone-900 font-mono">
           {{ metrics.totalProyectos }}
         </div>
-        <div class="text-[11px] text-stone-500 mt-2 flex items-center gap-2">
-          <span class="text-emerald-700 font-semibold">{{ metrics.proyectosAprobados }} aprobados</span>
+        <div class="text-[11px] text-stone-500 mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span class="text-emerald-700 font-semibold">{{ metrics.proyectosPublicados ?? metrics.proyectosAprobados }} publicados</span>
+          <span>·</span>
+          <span class="text-stone-700 font-semibold">{{ metrics.proyectosAprobados }} aprobados</span>
           <span>·</span>
           <span class="text-amber-700 font-semibold">{{ metrics.proyectosPendientes }} pendientes</span>
         </div>
@@ -181,7 +184,7 @@ onMounted(() => {
     </div>
 
     <!-- Quick Navigation to Admin Modules -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
       <router-link
         to="/admin/evaluacion-inicial"
         class="bg-white rounded-2xl border border-stone-200 hover:border-[#0D9488] p-5 shadow-xs transition-all flex items-center justify-between group"
@@ -220,6 +223,26 @@ onMounted(() => {
           </div>
         </div>
         <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#289EAB] group-hover:translate-x-1 transition-all shrink-0" />
+      </router-link>
+
+      <router-link
+        to="/admin/publicacion"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-emerald-600 p-5 shadow-xs transition-all flex items-center justify-between group"
+      >
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center shrink-0">
+            <Globe class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-emerald-700 transition-colors">
+              Publicar Proyectos
+            </h3>
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Controlar publicación y visibilidad de proyectos aprobados (KIR-22).
+            </p>
+          </div>
+        </div>
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-emerald-600 group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
 
       <router-link
@@ -268,7 +291,7 @@ onMounted(() => {
         href="/api-docs"
         target="_blank"
         rel="noopener noreferrer"
-        class="bg-white rounded-2xl border border-stone-200 hover:border-[#289EAB] p-6 shadow-xs transition-all flex items-center justify-between group sm:col-span-3"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#289EAB] p-6 shadow-xs transition-all flex items-center justify-between group sm:col-span-2 lg:col-span-3"
       >
         <div class="flex items-center gap-4">
           <div class="w-12 h-12 bg-[#E8F6F8] text-[#1E7B85] rounded-xl flex items-center justify-center">

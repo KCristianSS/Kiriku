@@ -12,6 +12,9 @@ export interface Organizacion {
 
 export type ProyectoEstado = 'pendiente_revision' | 'aprobado' | 'rechazado';
 
+// KIR-78: Estado de publicación de proyectos aprobados
+export type ProyectoEstadoPublicacion = 'sin_publicar' | 'publicado' | 'oculto';
+
 export interface Proyecto {
   id: number | string;
   organizacion_id?: number | string | null;
@@ -23,11 +26,18 @@ export interface Proyecto {
   fecha_fin?: string | null;
   es_mayor_edad: boolean;
   estado: ProyectoEstado;
+  publicado?: boolean;
+  fecha_publicacion?: string | null;
   motivo_rechazo?: string | null;
   portada_url?: string | null;
   created_at?: string;
   updated_at?: string;
+  organizacion_nombre?: string | null;
   organizacion?: Organizacion | null;
+}
+
+export interface PublishProjectPayload {
+  publicado: boolean;
 }
 
 export interface Postulante {
@@ -233,6 +243,7 @@ export interface CreateDonationPayload {
 export interface DashboardMetrics {
   totalProyectos: number;
   proyectosAprobados: number;
+  proyectosPublicados?: number;
   proyectosPendientes: number;
   totalPostulantes: number;
   postulacionesEnProceso: number;

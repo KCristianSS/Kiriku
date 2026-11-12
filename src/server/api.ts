@@ -106,7 +106,7 @@ router.post('/organizaciones', authenticate, requirePermission('projects.review'
 // -------------------------------------------------------------
 router.get('/proyectos', async (req: Request, res: Response) => {
   try {
-    const { estado, ubicacion, organizacion_id, q } = req.query;
+    const { estado, publicado, ubicacion, organizacion_id, q } = req.query;
     let sql = `
       SELECT p.*, 
              o.nombre as organizacion_nombre, 
@@ -121,6 +121,11 @@ router.get('/proyectos', async (req: Request, res: Response) => {
     if (estado) {
       params.push(estado);
       sql += ` AND p.estado = $${params.length}`;
+    }
+
+    if (publicado === 'true' || publicado === 'false') {
+      params.push(publicado === 'true');
+      sql += ` AND p.publicado = $${params.length}`;
     }
 
     if (ubicacion) {
@@ -145,6 +150,7 @@ router.get('/proyectos', async (req: Request, res: Response) => {
     // Format with nested organizacion object
     const formatted = rows.map((r: any) => ({
       ...r,
+      publicado: Boolean(r.publicado),
       organizacion: r.organizacion_id
         ? {
             id: r.organizacion_id,
@@ -159,6 +165,60 @@ router.get('/proyectos', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Error fetching proyectos:', err);
     res.status(500).json({ error: 'Error al consultar proyectos' });
+  }
+});
+
+// KIR-79 & KIR-80: Listado público exclusivo de proyectos aprobados y publicados
+router.get('/proyectos/publicados', async (req: Request, res: Response) => {
+  try {
+    const { ubicacion, organizacion_id, q } = req.query;
+    let sql = `
+      SELECT p.*, 
+             o.nombre as organizacion_nombre, 
+             o.tipo as organizacion_tipo,
+             o.contacto_nombre as organizacion_contacto
+      FROM proyectos p
+      LEFT JOIN organizaciones o ON p.organizacion_id = o.id
+      WHERE p.estado = 'aprobado' AND p.publicado = true
+    `;
+    const params: any[] = [];
+
+    if (ubicacion) {
+      params.push(`%${ubicacion}%`);
+      sql += ` AND p.ubicacion ILIKE $${params.length}`;
+    }
+
+    if (organizacion_id) {
+      params.push(organizacion_id);
+      sql += ` AND p.organizacion_id = $${params.length}`;
+    }
+
+    if (q) {
+      params.push(`%${q}%`);
+      sql += ` AND (p.titulo ILIKE $${params.length} OR p.descripcion ILIKE $${params.length} OR p.ubicacion ILIKE $${params.length})`;
+    }
+
+    sql += ' ORDER BY p.fecha_publicacion DESC NULLS LAST, p.created_at DESC';
+
+    const rows = await query(sql, params);
+
+    const formatted = rows.map((r: any) => ({
+      ...r,
+      publicado: true,
+      organizacion: r.organizacion_id
+        ? {
+            id: r.organizacion_id,
+            nombre: r.organizacion_nombre,
+            tipo: r.organizacion_tipo,
+            contacto_nombre: r.organizacion_contacto,
+          }
+        : null,
+    }));
+
+    res.json(formatted);
+  } catch (err: any) {
+    console.error('Error fetching published proyectos:', err);
+    res.status(500).json({ error: 'Error al consultar proyectos publicados' });
   }
 });
 
@@ -284,13 +344,13 @@ router.post('/proyectos', async (req: Request, res: Response) => {
       resolvedOrgId = orgRows[0].id;
     }
 
-    // KIR-108: Registrar la propuesta obligatoriamente en estado 'pendiente_revision'
+    // KIR-108: Registrar la propuesta obligatoriamente en estado 'pendiente_revision' y sin publicar
     const rows = await query(
       `INSERT INTO proyectos (
          organizacion_id, titulo, descripcion, ubicacion, 
          cupos_disponibles, fecha_inicio, fecha_fin, 
-         es_mayor_edad, estado, portada_url, motivo_rechazo, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, NOW(), NOW())
+         es_mayor_edad, estado, publicado, fecha_publicacion, portada_url, motivo_rechazo, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, NULL, $10, NULL, NOW(), NOW())
        RETURNING *`,
       [
         resolvedOrgId || null,
@@ -331,10 +391,13 @@ router.patch('/proyectos/:id/revision', authenticate, requirePermission('project
       return res.status(400).json({ error: 'Debe especificar el motivo de rechazo' });
     }
 
+    // Si se rechaza o reabre a pendiente_revision, despublicar automáticamente para proteger el catálogo
     const rows = await query(
       `UPDATE proyectos 
        SET estado = $1, 
-           motivo_rechazo = $2, 
+           motivo_rechazo = $2,
+           publicado = CASE WHEN $1 = 'aprobado' THEN publicado ELSE false END,
+           fecha_publicacion = CASE WHEN $1 = 'aprobado' THEN fecha_publicacion ELSE NULL END,
            updated_at = NOW()
        WHERE id = $3
        RETURNING *`,
@@ -349,6 +412,58 @@ router.patch('/proyectos/:id/revision', authenticate, requirePermission('project
   } catch (err: any) {
     console.error('Error updating project status:', err);
     res.status(500).json({ error: 'Error al actualizar estado del proyecto' });
+  }
+});
+
+// -------------------------------------------------------------
+// PUBLICACIÓN Y VISIBILIDAD DE PROYECTOS APROBADOS (HISTORIA KIR-22: KIR-78, KIR-79, KIR-80, KIR-81)
+// -------------------------------------------------------------
+router.patch('/proyectos/:id/publicacion', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { publicado } = req.body;
+
+    if (typeof publicado !== 'boolean') {
+      return res.status(400).json({ error: 'El campo publicado (booleano) es obligatorio' });
+    }
+
+    const existingRows = await query<{ id: number; titulo: string; estado: string; publicado: boolean }>(
+      'SELECT id, titulo, estado, publicado FROM proyectos WHERE id = $1',
+      [id]
+    );
+
+    if (!existingRows.length) {
+      return res.status(404).json({ error: 'Proyecto no encontrado' });
+    }
+
+    const existing = existingRows[0];
+
+    // Regla KIR-79: Solo los proyectos con estado 'aprobado' pueden publicarse
+    if (publicado && existing.estado !== 'aprobado') {
+      return res.status(400).json({
+        error: `Solo los proyectos en estado aprobado pueden ser publicados. Estado actual: ${existing.estado}`,
+      });
+    }
+
+    const rows = await query(
+      `UPDATE proyectos
+       SET publicado = $1,
+           fecha_publicacion = CASE WHEN $1 = true THEN COALESCE(fecha_publicacion, NOW()) ELSE NULL END,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [publicado, id]
+    );
+
+    res.json({
+      message: publicado
+        ? `Proyecto "${existing.titulo}" publicado con éxito en el catálogo de voluntarios.`
+        : `Proyecto "${existing.titulo}" ocultado del catálogo público.`,
+      proyecto: rows[0],
+    });
+  } catch (err: any) {
+    console.error('Error updating project publication status:', err);
+    res.status(500).json({ error: 'Error al actualizar estado de publicación del proyecto' });
   }
 });
 
@@ -1532,6 +1647,7 @@ router.get('/metrics', async (req: Request, res: Response) => {
   try {
     const totalProj = await query('SELECT COUNT(*) as c FROM proyectos');
     const aprobadosProj = await query("SELECT COUNT(*) as c FROM proyectos WHERE estado = 'aprobado'");
+    const publicadosProj = await query("SELECT COUNT(*) as c FROM proyectos WHERE estado = 'aprobado' AND publicado = true");
     const pendientesProj = await query("SELECT COUNT(*) as c FROM proyectos WHERE estado = 'pendiente_revision'");
     const totalPost = await query('SELECT COUNT(*) as c FROM postulantes');
     const appsEnProceso = await query("SELECT COUNT(*) as c FROM postulaciones WHERE estado_general = 'en_proceso'");
@@ -1543,6 +1659,7 @@ router.get('/metrics', async (req: Request, res: Response) => {
     res.json({
       totalProyectos: parseInt(totalProj[0].c, 10),
       proyectosAprobados: parseInt(aprobadosProj[0].c, 10),
+      proyectosPublicados: parseInt(publicadosProj[0].c, 10),
       proyectosPendientes: parseInt(pendientesProj[0].c, 10),
       totalPostulantes: parseInt(totalPost[0].c, 10),
       postulacionesEnProceso: parseInt(appsEnProceso[0].c, 10),
