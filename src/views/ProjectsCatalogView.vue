@@ -26,14 +26,14 @@ const modalProject = ref<Proyecto | null>(null);
 const isModalOpen = ref(false);
 
 onMounted(async () => {
-  await projectsStore.fetchProjects('aprobado');
+  await projectsStore.fetchPublishedProjects();
   await projectsStore.fetchOrganizations();
 });
 
-// Filter approved projects
+// KIR-80: Listado exclusivo de proyectos aprobados y publicados
 const filteredProjects = computed(() => {
   return projectsStore.projects.filter((p) => {
-    if (p.estado !== 'aprobado') return false;
+    if (p.estado !== 'aprobado' || !p.publicado) return false;
 
     if (searchQuery.value.trim()) {
       const q = searchQuery.value.toLowerCase();

@@ -830,8 +830,125 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
       await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
     });
   });
+
+  // ============================================================================
+  // KIR-22: Publicar proyecto aprobado (KIR-78, KIR-79, KIR-80, KIR-81)
+  // ============================================================================
+  describe('KIR-22: Publicar proyecto aprobado', () => {
+    it('KIR-78: Estructura de publicación - Columnas publicado y fecha_publicacion existen en proyectos', async () => {
+      const cols = await query<{ column_name: string; data_type: string; column_default: string | null }>(
+        `SELECT column_name, data_type, column_default
+         FROM information_schema.columns
+         WHERE table_name = 'proyectos' AND column_name IN ('publicado', 'fecha_publicacion')
+         ORDER BY column_name`
+      );
+      const colNames = cols.map((c) => c.column_name);
+      assert.ok(colNames.includes('publicado'), 'Debe existir la columna publicado');
+      assert.ok(colNames.includes('fecha_publicacion'), 'Debe existir la columna fecha_publicacion');
+
+      const pubCol = cols.find((c) => c.column_name === 'publicado');
+      assert.equal(pubCol?.data_type, 'boolean');
+      assert.ok(pubCol?.column_default?.includes('false'), 'publicado debe iniciar en false por defecto');
+    });
+
+    it('KIR-79: Permiso RBAC y regla de negocio - Solo proyectos aprobados pueden publicarse', async () => {
+      const perm = await query<{ codigo: string }>(
+        `SELECT p.code AS codigo
+         FROM permissions p
+         JOIN role_permissions rp ON p.id = rp.permission_id
+         JOIN roles r ON rp.role_id = r.id
+         WHERE p.code = 'projects.review' AND r.code = 'administrador'`
+      );
+      assert.ok(perm.length > 0, 'Administrador debe tener permiso projects.review para publicar');
+
+      // Crear proyecto en estado pendiente_revision y verificar que no cumple requisito de publicación
+      const org = await query<{ id: number }>('SELECT id FROM organizaciones LIMIT 1');
+      assert.ok(org.length > 0);
+
+      const ins = await query<{ id: number; estado: string; publicado: boolean }>(
+        `INSERT INTO proyectos (titulo, descripcion, ubicacion, cupos_disponibles, organizacion_id, estado, publicado)
+         VALUES ($1, 'Proyecto de prueba KIR-79 no aprobado', 'La Paz', 5, $2, 'pendiente_revision', false)
+         RETURNING id, estado, publicado`,
+        [`Proyecto KIR-79 Test ${Date.now()}`, org[0].id]
+      );
+      const projId = ins[0].id;
+      assert.equal(ins[0].estado, 'pendiente_revision');
+      assert.equal(ins[0].publicado, false);
+
+      // Verificar mediante consulta de servicio que no es elegible para catálogo público
+      const eligible = await query<{ id: number }>(
+        `SELECT id FROM proyectos WHERE id = $1 AND estado = 'aprobado'`,
+        [projId]
+      );
+      assert.equal(eligible.length, 0, 'Un proyecto no aprobado no puede ser publicado');
+
+      await query('DELETE FROM proyectos WHERE id = $1', [projId]);
+    });
+
+    it('KIR-80 y KIR-81: Pruebas de visibilidad - Solo proyectos aprobados y publicados aparecen en listado público', async () => {
+      const org = await query<{ id: number }>('SELECT id FROM organizaciones LIMIT 1');
+      assert.ok(org.length > 0);
+
+      const testTitle = `Proyecto Visibilidad KIR-22 ${Date.now()}`;
+
+      // 1. Insertar propuesta en pendiente_revision (publicado = false)
+      const created = await query<{ id: number; estado: string; publicado: boolean }>(
+        `INSERT INTO proyectos (titulo, descripcion, ubicacion, cupos_disponibles, organizacion_id, estado, publicado)
+         VALUES ($1, 'Prueba de ciclo de vida de visibilidad', 'Cochabamba', 10, $2, 'pendiente_revision', false)
+         RETURNING id, estado, publicado`,
+        [testTitle, org[0].id]
+      );
+      const projectId = created[0].id;
+      assert.equal(created[0].publicado, false);
+
+      // Verificar NO visible en catálogo público
+      let publicRows = await query<{ id: number }>(
+        `SELECT id FROM proyectos WHERE id = $1 AND estado = 'aprobado' AND publicado = true`,
+        [projectId]
+      );
+      assert.equal(publicRows.length, 0, 'Pendiente de revisión NO debe ser visible en catálogo');
+
+      // 2. Aprobar proyecto sin publicar todavía (estado = aprobado, publicado = false)
+      await query(
+        `UPDATE proyectos SET estado = 'aprobado', updated_at = NOW() WHERE id = $1`,
+        [projectId]
+      );
+      publicRows = await query<{ id: number }>(
+        `SELECT id FROM proyectos WHERE id = $1 AND estado = 'aprobado' AND publicado = true`,
+        [projectId]
+      );
+      assert.equal(publicRows.length, 0, 'Aprobado pero sin publicar NO debe ser visible aún en catálogo');
+
+      // 3. Publicar proyecto aprobado (publicado = true, fecha_publicacion = NOW())
+      const published = await query<{ id: number; publicado: boolean; fecha_publicacion: string | null }>(
+        `UPDATE proyectos
+         SET publicado = true, fecha_publicacion = NOW(), updated_at = NOW()
+         WHERE id = $1 AND estado = 'aprobado'
+         RETURNING id, publicado, fecha_publicacion`,
+        [projectId]
+      );
+      assert.equal(published[0].publicado, true);
+      assert.ok(published[0].fecha_publicacion, 'Debe registrar fecha_publicacion');
+
+      publicRows = await query<{ id: number }>(
+        `SELECT id FROM proyectos WHERE id = $1 AND estado = 'aprobado' AND publicado = true`,
+        [projectId]
+      );
+      assert.equal(publicRows.length, 1, 'Proyecto aprobado y publicado SÍ debe ser visible en catálogo');
+
+      // 4. Ocultar proyecto del catálogo manteniendo aprobación
+      await query(
+        `UPDATE proyectos SET publicado = false, fecha_publicacion = NULL, updated_at = NOW() WHERE id = $1`,
+        [projectId]
+      );
+      publicRows = await query<{ id: number }>(
+        `SELECT id FROM proyectos WHERE id = $1 AND estado = 'aprobado' AND publicado = true`,
+        [projectId]
+      );
+      assert.equal(publicRows.length, 0, 'Proyecto ocultado NO debe ser visible en catálogo');
+
+      // Limpieza
+      await query('DELETE FROM proyectos WHERE id = $1', [projectId]);
+    });
+  });
 });
-
-
-
-

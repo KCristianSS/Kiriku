@@ -96,9 +96,9 @@ const isFormValid = computed(() => {
   return true;
 });
 
-// Approved projects available for selection
+// Approved and published projects available for selection (KIR-22)
 const availableProjects = computed(() => {
-  return projectsStore.projects.filter((p) => p.estado === 'aprobado');
+  return projectsStore.projects.filter((p) => p.estado === 'aprobado' && p.publicado !== false);
 });
 
 // Asynchronously validate age against the backend API (KIR-99)
@@ -192,7 +192,7 @@ watch(
 
 onMounted(async () => {
   if (projectsStore.projects.length === 0) {
-    await projectsStore.fetchProjects('aprobado');
+    await projectsStore.fetchPublishedProjects();
   }
 
   // Prepopulate birthdate if passed from query
