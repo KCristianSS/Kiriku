@@ -105,6 +105,30 @@ router.post('/organizaciones', authenticate, requirePermission('projects.review'
 // -------------------------------------------------------------
 // 2. PROYECTOS (Catálogo, Propuestas, Revisión)
 // -------------------------------------------------------------
+router.get('/proyectos/tracking', async (req: Request, res: Response) => {
+  try {
+    const busqueda = typeof req.query.busqueda === 'string' ? req.query.busqueda.trim() : '';
+    if (!busqueda) {
+      return res.status(400).json({ error: 'Ingrese el correo de contacto de la organización' });
+    }
+
+    const rows = await query(
+      `SELECT p.id, p.titulo, p.ubicacion, p.estado, p.motivo_rechazo,
+              p.created_at, p.updated_at, o.nombre AS organizacion_nombre
+       FROM proyectos p
+       JOIN organizaciones o ON o.id = p.organizacion_id
+       WHERE LOWER(TRIM(o.contacto_email)) = LOWER($1)
+       ORDER BY p.created_at DESC`,
+      [busqueda]
+    );
+
+    res.json(rows);
+  } catch (err: any) {
+    console.error('Error tracking project proposals:', err);
+    res.status(500).json({ error: 'Error al consultar el seguimiento de proyectos' });
+  }
+});
+
 router.get('/proyectos', async (req: Request, res: Response) => {
   try {
     const { estado, ubicacion, organizacion_id, q } = req.query;
