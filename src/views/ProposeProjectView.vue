@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { RouterLink } from 'vue-router';
 import { Building2, Sparkles } from 'lucide-vue-next';
 </script>
 
@@ -23,6 +24,13 @@ import { Building2, Sparkles } from 'lucide-vue-next';
       <p class="text-stone-600 text-sm max-w-md mx-auto mb-6 leading-relaxed">
         Vista destinada al registro y propuesta de proyectos de voluntariado por parte de organizaciones e instituciones aliadas.
       </p>
+
+      <RouterLink
+        to="/seguimiento-proyecto"
+        class="inline-flex items-center justify-center px-5 py-2.5 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-sm font-semibold rounded-xl transition-colors"
+      >
+        Consultar seguimiento de un proyecto inscrito
+      </RouterLink>
 
       <div class="inline-flex items-center text-xs text-stone-500 font-mono bg-stone-100 border border-stone-200 px-3.5 py-1.5 rounded-lg">
         src/views/ProposeProjectView.vue
