@@ -178,6 +178,8 @@ function handleResetForm() {
   submittedProject.value = null;
   errorMsg.value = null;
 }
+import { RouterLink } from 'vue-router';
+import { Building2, Sparkles } from 'lucide-vue-next';
 </script>
 
 <template>
@@ -264,6 +266,15 @@ function handleResetForm() {
             Proponer otro proyecto
           </button>
         </div>
+      <RouterLink
+        to="/seguimiento-proyecto"
+        class="inline-flex items-center justify-center px-5 py-2.5 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-sm font-semibold rounded-xl transition-colors"
+      >
+        Consultar seguimiento de un proyecto inscrito
+      </RouterLink>
+
+      <div class="inline-flex items-center text-xs text-stone-500 font-mono bg-stone-100 border border-stone-200 px-3.5 py-1.5 rounded-lg">
+        src/views/ProposeProjectView.vue
       </div>
 
       <!-- MAIN FORM: REGISTRAR PROPUESTA DE PROYECTO (KIR-107 & KIR-109) -->
