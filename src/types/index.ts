@@ -12,6 +12,9 @@ export interface Organizacion {
 
 export type ProyectoEstado = 'pendiente_revision' | 'aprobado' | 'rechazado';
 
+// KIR-78: Estado de publicación de proyectos aprobados
+export type ProyectoEstadoPublicacion = 'sin_publicar' | 'publicado' | 'oculto';
+
 export interface Proyecto {
   id: number | string;
   organizacion_id?: number | string | null;
@@ -23,11 +26,18 @@ export interface Proyecto {
   fecha_fin?: string | null;
   es_mayor_edad: boolean;
   estado: ProyectoEstado;
+  publicado?: boolean;
+  fecha_publicacion?: string | null;
   motivo_rechazo?: string | null;
   portada_url?: string | null;
   created_at?: string;
   updated_at?: string;
+  organizacion_nombre?: string | null;
   organizacion?: Organizacion | null;
+}
+
+export interface PublishProjectPayload {
+  publicado: boolean;
 }
 
 export interface Postulante {
@@ -93,6 +103,42 @@ export interface EvaluacionEtapa {
   comentarios?: string | null;
   fecha_evaluacion?: string | null;
 }
+
+// KIR-70: Estructura de evaluación inicial
+export interface EvaluacionInicialItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  postulacion_fecha: string;
+  postulacion_estado: PostulacionEstado;
+  postulante: Postulante & {
+    edad: number;
+    es_mayor_edad: boolean;
+  };
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    es_mayor_edad: boolean;
+    organizacion_nombre?: string | null;
+  };
+}
+
+export interface RegistrarEvaluacionInicialPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado' | 'en_revision';
+  evaluador: string;
+  comentarios: string;
+  criterios?: {
+    mayoria_edad_verificada?: boolean;
+    identidad_ci_valida?: boolean;
+    carta_motivacion_apta?: boolean;
+    disponibilidad_confirmada?: boolean;
+  };
+}
+
 
 export interface Postulacion {
   id: number | string;
@@ -197,6 +243,7 @@ export interface CreateDonationPayload {
 export interface DashboardMetrics {
   totalProyectos: number;
   proyectosAprobados: number;
+  proyectosPublicados?: number;
   proyectosPendientes: number;
   totalPostulantes: number;
   postulacionesEnProceso: number;

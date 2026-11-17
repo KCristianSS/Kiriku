@@ -8,6 +8,8 @@ import type {
   PostulanteBancoItem,
   PostulanteMetricasResumen,
   EvaluacionEtapa,
+  EvaluacionInicialItem,
+  RegistrarEvaluacionInicialPayload,
   Donacion,
   CreatePostulantePayload,
   PostulacionRegistroResponse,
@@ -17,6 +19,7 @@ import type {
   CreateDonationPayload,
   DashboardMetrics,
 } from '../types';
+
 
 
 export const apiClient = axios.create({
@@ -93,6 +96,7 @@ export const api = {
   // Proyectos
   async getProyectos(params?: {
     estado?: string;
+    publicado?: boolean | string;
     ubicacion?: string;
     organizacion_id?: string;
     q?: string;
@@ -101,11 +105,23 @@ export const api = {
     return res.data;
   },
 
+  // KIR-22: Listado público de proyectos aprobados y publicados (KIR-79 & KIR-80)
+  async getPublishedProjects(params?: {
+    ubicacion?: string;
+    organizacion_id?: string;
+    q?: string;
+  }): Promise<Proyecto[]> {
+    const res = await apiClient.get<Proyecto[]>('/proyectos/publicados', { params });
+    return res.data;
+  },
+
   async getProyectoById(id: number | string): Promise<Proyecto> {
     const res = await apiClient.get<Proyecto>(`/proyectos/${id}`);
     return res.data;
   },
 
+  async proposeProject(payload: ProposeProjectPayload): Promise<{ message?: string; proyecto: Proyecto }> {
+    const res = await apiClient.post('/proyectos', payload);
   async trackProjectProposals(busqueda: string): Promise<Array<{
     id: number | string;
     titulo: string;
@@ -132,6 +148,16 @@ export const api = {
     const res = await apiClient.patch<Proyecto>(`/proyectos/${id}/revision`, payload);
     return res.data;
   },
+
+  // KIR-22: Servicio de publicación/visibilidad de proyectos aprobados (KIR-79)
+  async publishProject(
+    id: number | string,
+    payload: { publicado: boolean }
+  ): Promise<{ message?: string; proyecto: Proyecto }> {
+    const res = await apiClient.patch(`/proyectos/${id}/publicacion`, payload);
+    return res.data;
+  },
+
 
   // Organizaciones
   async getOrganizaciones(): Promise<Organizacion[]> {
@@ -221,10 +247,35 @@ export const api = {
     return res.data;
   },
 
-  async updateApplicant(id: number | string, payload: Partial<Postulante>): Promise<Postulante> {
-    const res = await apiClient.patch<Postulante>(`/postulantes/${id}`, payload);
+  // KIR-24: Gestión de Evaluación Inicial (KIR-71)
+  async getInitialEvaluations(params?: {
+    estado?: string;
+    proyecto_id?: number | string;
+    q?: string;
+  }): Promise<EvaluacionInicialItem[]> {
+    const res = await apiClient.get<EvaluacionInicialItem[]>('/evaluaciones/inicial', { params });
     return res.data;
   },
+
+  async getInitialEvaluationsMetrics(): Promise<{
+    total: number;
+    pendientes: number;
+    aprobados: number;
+    observados: number;
+    rechazados: number;
+  }> {
+    const res = await apiClient.get('/evaluaciones/inicial/metricas');
+    return res.data;
+  },
+
+  async submitInitialEvaluation(
+    postulacionId: number | string,
+    payload: RegistrarEvaluacionInicialPayload
+  ): Promise<any> {
+    const res = await apiClient.post(`/evaluaciones/inicial/${postulacionId}`, payload);
+    return res.data;
+  },
+
 
   async updateEvaluationStage(
     id: number | string,
@@ -257,13 +308,7 @@ export const api = {
       es_reenganche?: boolean;
     }
   ): Promise<Postulacion> {
-    const res = await apiClient.patch<Postulacion>(`/postulaciones/${id}/reenganche`, payload);
-    return res.data;
-  },
-
-  async restartTechnicalStage(id: number | string): Promise<EvaluacionEtapa> {
-    const res = await apiClient.post<EvaluacionEtapa>(`/postulaciones/${id}/reiniciar-etapa-tecnica`);
-    return res.data;
+    return this.manageReasignacion(id, payload);
   },
 
   async updateApplicationStatus(
