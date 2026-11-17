@@ -1,6 +1,12 @@
 const { Pool } = require('pg');
+require('dotenv').config();
+
+if (!process.env.DATABASE_URL) {
+  throw new Error('Define DATABASE_URL antes de ejecutar el seed.');
+}
+
 const pool = new Pool({
-  connectionString: 'postgresql://postgres:ucb_sistemas2026@db.zijlhvezhtgzdgojstbk.supabase.co:5432/postgres',
+  connectionString: process.env.DATABASE_URL,
 });
 
 async function run() {

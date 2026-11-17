@@ -122,6 +122,22 @@ export const api = {
 
   async proposeProject(payload: ProposeProjectPayload): Promise<{ message?: string; proyecto: Proyecto }> {
     const res = await apiClient.post('/proyectos', payload);
+  async trackProjectProposals(busqueda: string): Promise<Array<{
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    estado: 'pendiente_revision' | 'aprobado' | 'rechazado';
+    motivo_rechazo?: string | null;
+    created_at?: string;
+    updated_at?: string;
+    organizacion_nombre: string;
+  }>> {
+    const res = await apiClient.get('/proyectos/tracking', { params: { busqueda } });
+    return res.data;
+  },
+
+  async proposeProject(payload: ProposeProjectPayload): Promise<Proyecto> {
+    const res = await apiClient.post<Proyecto>('/proyectos', payload);
     return res.data;
   },
 
