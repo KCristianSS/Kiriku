@@ -2,6 +2,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import ProjectsCatalogView from '../views/ProjectsCatalogView.vue';
 import ApplyView from '../views/ApplyView.vue';
 import ApplicationStatusView from '../views/ApplicationStatusView.vue';
+import ProjectStatusView from '../views/ProjectStatusView.vue';
 import ProposeProjectView from '../views/ProposeProjectView.vue';
 import DonationsView from '../views/DonationsView.vue';
 import AdminDashboardView from '../views/admin/AdminDashboardView.vue';
@@ -34,6 +35,11 @@ const routes: RouteRecordRaw[] = [
     path: '/seguimiento',
     name: 'status',
     component: ApplicationStatusView,
+  },
+  {
+    path: '/seguimiento-proyecto',
+    name: 'project-status',
+    component: ProjectStatusView,
   },
   {
     path: '/proponer',
