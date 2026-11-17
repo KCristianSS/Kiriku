@@ -1,7 +1,6 @@
 import express, { Request, Response, Router } from 'express';
 import { query, supabaseAdmin } from './supabase';
 import { authenticate, requirePermission } from './authorization';
-import { resolveWorkflowChanges } from './application-workflows';
 
 const router: Router = express.Router();
 
@@ -131,7 +130,7 @@ router.get('/proyectos/tracking', async (req: Request, res: Response) => {
 
 router.get('/proyectos', async (req: Request, res: Response) => {
   try {
-    const { estado, ubicacion, organizacion_id, q } = req.query;
+    const { estado, publicado, ubicacion, organizacion_id, q } = req.query;
     let sql = `
       SELECT p.*, 
              o.nombre as organizacion_nombre, 
@@ -146,6 +145,11 @@ router.get('/proyectos', async (req: Request, res: Response) => {
     if (estado) {
       params.push(estado);
       sql += ` AND p.estado = $${params.length}`;
+    }
+
+    if (publicado === 'true' || publicado === 'false') {
+      params.push(publicado === 'true');
+      sql += ` AND p.publicado = $${params.length}`;
     }
 
     if (ubicacion) {
@@ -170,6 +174,7 @@ router.get('/proyectos', async (req: Request, res: Response) => {
     // Format with nested organizacion object
     const formatted = rows.map((r: any) => ({
       ...r,
+      publicado: Boolean(r.publicado),
       organizacion: r.organizacion_id
         ? {
             id: r.organizacion_id,
@@ -184,6 +189,60 @@ router.get('/proyectos', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Error fetching proyectos:', err);
     res.status(500).json({ error: 'Error al consultar proyectos' });
+  }
+});
+
+// KIR-79 & KIR-80: Listado público exclusivo de proyectos aprobados y publicados
+router.get('/proyectos/publicados', async (req: Request, res: Response) => {
+  try {
+    const { ubicacion, organizacion_id, q } = req.query;
+    let sql = `
+      SELECT p.*, 
+             o.nombre as organizacion_nombre, 
+             o.tipo as organizacion_tipo,
+             o.contacto_nombre as organizacion_contacto
+      FROM proyectos p
+      LEFT JOIN organizaciones o ON p.organizacion_id = o.id
+      WHERE p.estado = 'aprobado' AND p.publicado = true
+    `;
+    const params: any[] = [];
+
+    if (ubicacion) {
+      params.push(`%${ubicacion}%`);
+      sql += ` AND p.ubicacion ILIKE $${params.length}`;
+    }
+
+    if (organizacion_id) {
+      params.push(organizacion_id);
+      sql += ` AND p.organizacion_id = $${params.length}`;
+    }
+
+    if (q) {
+      params.push(`%${q}%`);
+      sql += ` AND (p.titulo ILIKE $${params.length} OR p.descripcion ILIKE $${params.length} OR p.ubicacion ILIKE $${params.length})`;
+    }
+
+    sql += ' ORDER BY p.fecha_publicacion DESC NULLS LAST, p.created_at DESC';
+
+    const rows = await query(sql, params);
+
+    const formatted = rows.map((r: any) => ({
+      ...r,
+      publicado: true,
+      organizacion: r.organizacion_id
+        ? {
+            id: r.organizacion_id,
+            nombre: r.organizacion_nombre,
+            tipo: r.organizacion_tipo,
+            contacto_nombre: r.organizacion_contacto,
+          }
+        : null,
+    }));
+
+    res.json(formatted);
+  } catch (err: any) {
+    console.error('Error fetching published proyectos:', err);
+    res.status(500).json({ error: 'Error al consultar proyectos publicados' });
   }
 });
 
@@ -227,7 +286,9 @@ router.get('/proyectos/:id', async (req: Request, res: Response) => {
   }
 });
 
-// Registro de propuesta de proyecto
+// -------------------------------------------------------------
+// PROPUESTAS DE PROYECTOS COMUNITARIOS (HISTORIA KIR-106: KIR-107, KIR-108, KIR-109, KIR-110)
+// -------------------------------------------------------------
 router.post('/proyectos', async (req: Request, res: Response) => {
   try {
     const {
@@ -243,56 +304,102 @@ router.post('/proyectos', async (req: Request, res: Response) => {
       organizacion_nueva,
     } = req.body;
 
-    if (!titulo || !descripcion || !ubicacion) {
-      return res.status(400).json({ error: 'Título, descripción y ubicación son obligatorios' });
+    // KIR-109: Validación de campos obligatorios
+    if (!titulo || typeof titulo !== 'string' || titulo.trim().length < 5) {
+      return res.status(400).json({ error: 'El título del proyecto es obligatorio y debe tener al menos 5 caracteres' });
+    }
+
+    if (!descripcion || typeof descripcion !== 'string' || descripcion.trim().length < 15) {
+      return res.status(400).json({ error: 'La descripción del proyecto es obligatoria y debe tener al menos 15 caracteres' });
+    }
+
+    if (!ubicacion || typeof ubicacion !== 'string' || ubicacion.trim().length < 3) {
+      return res.status(400).json({ error: 'La ubicación del proyecto es obligatoria (al menos 3 caracteres)' });
+    }
+
+    // Validación de cupos
+    const parsedCupos = Number(cupos_disponibles);
+    if (isNaN(parsedCupos) || parsedCupos <= 0 || !Number.isInteger(parsedCupos)) {
+      return res.status(400).json({ error: 'El número de cupos disponibles debe ser un número entero mayor a 0' });
+    }
+
+    // Validación de organización (existente o nueva)
+    const hasExistingOrg = Boolean(organizacion_id);
+    const hasNewOrg = Boolean(organizacion_nueva && organizacion_nueva.nombre && organizacion_nueva.nombre.trim());
+
+    if (!hasExistingOrg && !hasNewOrg) {
+      return res.status(400).json({
+        error: 'Debe vincular una organización aliada existente o registrar los datos de una nueva institución',
+      });
+    }
+
+    // KIR-109: Validación de fechas de ejecución
+    if (fecha_inicio && fecha_fin) {
+      const dInicio = new Date(fecha_inicio);
+      const dFin = new Date(fecha_fin);
+
+      if (isNaN(dInicio.getTime()) || isNaN(dFin.getTime())) {
+        return res.status(400).json({ error: 'Las fechas de ejecución deben ser válidas' });
+      }
+
+      if (dFin < dInicio) {
+        return res.status(400).json({
+          error: 'La fecha de finalización no puede ser anterior a la fecha de inicio del proyecto',
+        });
+      }
     }
 
     let resolvedOrgId = organizacion_id;
 
     // Si se envió una nueva organización para crear
-    if (!resolvedOrgId && organizacion_nueva && organizacion_nueva.nombre) {
+    if (!resolvedOrgId && hasNewOrg) {
       const orgRows = await query(
         `INSERT INTO organizaciones (nombre, tipo, contacto_nombre, contacto_email, contacto_telefono)
          VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
         [
-          organizacion_nueva.nombre,
+          organizacion_nueva.nombre.trim(),
           organizacion_nueva.tipo || 'ONG',
-          organizacion_nueva.contacto_nombre || null,
-          organizacion_nueva.contacto_email || null,
-          organizacion_nueva.contacto_telefono || null,
+          organizacion_nueva.contacto_nombre ? organizacion_nueva.contacto_nombre.trim() : null,
+          organizacion_nueva.contacto_email ? organizacion_nueva.contacto_email.trim() : null,
+          organizacion_nueva.contacto_telefono ? organizacion_nueva.contacto_telefono.trim() : null,
         ]
       );
       resolvedOrgId = orgRows[0].id;
     }
 
+    // KIR-108: Registrar la propuesta obligatoriamente en estado 'pendiente_revision' y sin publicar
     const rows = await query(
       `INSERT INTO proyectos (
          organizacion_id, titulo, descripcion, ubicacion, 
          cupos_disponibles, fecha_inicio, fecha_fin, 
-         es_mayor_edad, estado, portada_url
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         es_mayor_edad, estado, publicado, fecha_publicacion, portada_url, motivo_rechazo, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, NULL, $10, NULL, NOW(), NOW())
        RETURNING *`,
       [
         resolvedOrgId || null,
-        titulo,
-        descripcion,
-        ubicacion,
-        cupos_disponibles || 10,
+        titulo.trim(),
+        descripcion.trim(),
+        ubicacion.trim(),
+        parsedCupos,
         fecha_inicio || null,
         fecha_fin || null,
-        es_mayor_edad !== undefined ? es_mayor_edad : true,
+        es_mayor_edad !== undefined ? Boolean(es_mayor_edad) : true,
         'pendiente_revision',
-        portada_url || null,
+        portada_url ? portada_url.trim() : null,
       ]
     );
 
-    res.status(201).json(rows[0]);
+    res.status(201).json({
+      message: 'Propuesta de proyecto comunitario registrada con éxito en estado pendiente de revisión',
+      proyecto: rows[0],
+    });
   } catch (err: any) {
     console.error('Error creating project proposal:', err);
     res.status(500).json({ error: 'Error al registrar propuesta de proyecto' });
   }
 });
+
 
 // Revisión de proyectos: aprobar o rechazar con motivo
 router.patch('/proyectos/:id/revision', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
@@ -308,10 +415,13 @@ router.patch('/proyectos/:id/revision', authenticate, requirePermission('project
       return res.status(400).json({ error: 'Debe especificar el motivo de rechazo' });
     }
 
+    // Si se rechaza o reabre a pendiente_revision, despublicar automáticamente para proteger el catálogo
     const rows = await query(
       `UPDATE proyectos 
        SET estado = $1, 
-           motivo_rechazo = $2, 
+           motivo_rechazo = $2,
+           publicado = CASE WHEN $1 = 'aprobado' THEN publicado ELSE false END,
+           fecha_publicacion = CASE WHEN $1 = 'aprobado' THEN fecha_publicacion ELSE NULL END,
            updated_at = NOW()
        WHERE id = $3
        RETURNING *`,
@@ -326,6 +436,58 @@ router.patch('/proyectos/:id/revision', authenticate, requirePermission('project
   } catch (err: any) {
     console.error('Error updating project status:', err);
     res.status(500).json({ error: 'Error al actualizar estado del proyecto' });
+  }
+});
+
+// -------------------------------------------------------------
+// PUBLICACIÓN Y VISIBILIDAD DE PROYECTOS APROBADOS (HISTORIA KIR-22: KIR-78, KIR-79, KIR-80, KIR-81)
+// -------------------------------------------------------------
+router.patch('/proyectos/:id/publicacion', authenticate, requirePermission('projects.review'), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { publicado } = req.body;
+
+    if (typeof publicado !== 'boolean') {
+      return res.status(400).json({ error: 'El campo publicado (booleano) es obligatorio' });
+    }
+
+    const existingRows = await query<{ id: number; titulo: string; estado: string; publicado: boolean }>(
+      'SELECT id, titulo, estado, publicado FROM proyectos WHERE id = $1',
+      [id]
+    );
+
+    if (!existingRows.length) {
+      return res.status(404).json({ error: 'Proyecto no encontrado' });
+    }
+
+    const existing = existingRows[0];
+
+    // Regla KIR-79: Solo los proyectos con estado 'aprobado' pueden publicarse
+    if (publicado && existing.estado !== 'aprobado') {
+      return res.status(400).json({
+        error: `Solo los proyectos en estado aprobado pueden ser publicados. Estado actual: ${existing.estado}`,
+      });
+    }
+
+    const rows = await query(
+      `UPDATE proyectos
+       SET publicado = $1,
+           fecha_publicacion = CASE WHEN $1 = true THEN COALESCE(fecha_publicacion, NOW()) ELSE NULL END,
+           updated_at = NOW()
+       WHERE id = $2
+       RETURNING *`,
+      [publicado, id]
+    );
+
+    res.json({
+      message: publicado
+        ? `Proyecto "${existing.titulo}" publicado con éxito en el catálogo de voluntarios.`
+        : `Proyecto "${existing.titulo}" ocultado del catálogo público.`,
+      proyecto: rows[0],
+    });
+  } catch (err: any) {
+    console.error('Error updating project publication status:', err);
+    res.status(500).json({ error: 'Error al actualizar estado de publicación del proyecto' });
   }
 });
 
@@ -820,8 +982,6 @@ router.get('/postulantes/metricas/resumen', async (_req: Request, res: Response)
 
 // KIR-94 & KIR-95: Consulta, filtros avanzados y avance parcial del banco de postulantes
 router.get('/postulantes', async (req: Request, res: Response) => {
-// Banco de postulantes único
-router.get('/postulantes', authenticate, requirePermission('applications.read'), async (req: Request, res: Response) => {
   try {
     const { q, profesion, estado, proyecto_id, ordenar } = req.query;
 
@@ -1050,36 +1210,250 @@ router.get('/postulantes/:id', async (req: Request, res: Response) => {
 });
 
 
-// Actualizar los datos de contacto y perfil de un voluntario (KIR-91).
-router.patch('/postulantes/:id', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
+// -------------------------------------------------------------
+// EVALUACIÓN INICIAL DE POSTULACIONES (HISTORIA KIR-24: KIR-70, KIR-71, KIR-72, KIR-73)
+// -------------------------------------------------------------
+
+// KIR-71: Métricas de la etapa inicial
+router.get('/evaluaciones/inicial/metricas', async (_req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const { nombres, apellidos, email, telefono, ci, fecha_nacimiento, profesion_ocupacion, habilidades, motivacion } = req.body || {};
-    if (!nombres?.trim() || !apellidos?.trim() || !email?.trim() || !ci?.trim() || !fecha_nacimiento) {
-      return res.status(400).json({ error: 'Nombres, apellidos, correo, CI y fecha de nacimiento son obligatorios' });
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      return res.status(400).json({ error: 'El correo electrónico no es válido' });
-    }
-    const conflict = await query('SELECT id FROM postulantes WHERE (LOWER(email) = LOWER($1) OR ci = $2) AND id <> $3 LIMIT 1', [email.trim(), ci.trim(), id]);
-    if (conflict.length) return res.status(409).json({ error: 'El correo o CI ya pertenece a otro postulante' });
-    const rows = await query(
-      `UPDATE postulantes SET nombres = $1, apellidos = $2, email = $3, telefono = $4, ci = $5,
-       fecha_nacimiento = $6, profesion_ocupacion = $7, habilidades = $8, motivacion = $9
-       WHERE id = $10 RETURNING *`,
-      [nombres.trim(), apellidos.trim(), email.trim().toLowerCase(), telefono?.trim() || null, ci.trim(), fecha_nacimiento,
-        profesion_ocupacion?.trim() || null, habilidades?.trim() || null, motivacion?.trim() || null, id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Postulante no encontrado' });
-    res.json(rows[0]);
+    const stats = await query<{
+      total: string;
+      pendientes: string;
+      aprobados: string;
+      observados: string;
+      rechazados: string;
+    }>(`
+      SELECT 
+        COUNT(*) as total,
+        COUNT(CASE WHEN estado IN ('pendiente', 'en_revision', 'en revision') THEN 1 END) as pendientes,
+        COUNT(CASE WHEN estado = 'aprobado' THEN 1 END) as aprobados,
+        COUNT(CASE WHEN estado = 'observado' THEN 1 END) as observados,
+        COUNT(CASE WHEN estado = 'rechazado' THEN 1 END) as rechazados
+      FROM evaluaciones_etapas
+      WHERE etapa = 'inicial'
+    `);
+
+    res.json({
+      total: parseInt(stats[0]?.total || '0', 10),
+      pendientes: parseInt(stats[0]?.pendientes || '0', 10),
+      aprobados: parseInt(stats[0]?.aprobados || '0', 10),
+      observados: parseInt(stats[0]?.observados || '0', 10),
+      rechazados: parseInt(stats[0]?.rechazados || '0', 10),
+    });
   } catch (err: any) {
-    console.error('Error updating postulante:', err);
-    res.status(500).json({ error: 'Error al actualizar los datos del voluntario' });
+    console.error('Error fetching metricas iniciales:', err);
+    res.status(500).json({ error: 'Error al consultar métricas de evaluación inicial' });
   }
 });
 
+// KIR-70 & KIR-71: Consulta y listado de postulaciones en etapa inicial
+router.get('/evaluaciones/inicial', async (req: Request, res: Response) => {
+  try {
+    const { estado, proyecto_id, q } = req.query;
+
+    let sql = `
+      SELECT ee.id as etapa_id,
+             ee.postulacion_id,
+             ee.estado as etapa_estado,
+             ee.evaluador,
+             ee.comentarios,
+             ee.fecha_evaluacion,
+             app.created_at as postulacion_fecha,
+             app.estado_general as postulacion_estado,
+             p.id as postulante_id,
+             p.nombres,
+             p.apellidos,
+             p.ci,
+             p.email,
+             p.telefono,
+             p.fecha_nacimiento,
+             p.profesion_ocupacion,
+             p.habilidades,
+             p.motivacion,
+             proy.id as proyecto_id,
+             proy.titulo as proyecto_titulo,
+             proy.ubicacion as proyecto_ubicacion,
+             proy.es_mayor_edad as proyecto_es_mayor_edad,
+             org.nombre as organizacion_nombre
+      FROM evaluaciones_etapas ee
+      JOIN postulaciones app ON app.id = ee.postulacion_id
+      JOIN postulantes p ON p.id = app.postulante_id
+      JOIN proyectos proy ON proy.id = app.proyecto_id
+      LEFT JOIN organizaciones org ON org.id = proy.organizacion_id
+      WHERE ee.etapa = 'inicial'
+    `;
+    const params: any[] = [];
+
+    if (estado && typeof estado === 'string') {
+      if (estado === 'pendientes') {
+        sql += ` AND ee.estado IN ('pendiente', 'en_revision', 'en revision')`;
+      } else if (estado !== 'todos') {
+        params.push(estado);
+        sql += ` AND ee.estado = $${params.length}`;
+      }
+    }
+
+    if (proyecto_id) {
+      params.push(proyecto_id);
+      sql += ` AND proy.id = $${params.length}`;
+    }
+
+    if (q && typeof q === 'string' && q.trim()) {
+      params.push(`%${q.trim()}%`);
+      sql += ` AND (
+        p.nombres ILIKE $${params.length} OR 
+        p.apellidos ILIKE $${params.length} OR 
+        p.ci ILIKE $${params.length} OR 
+        p.email ILIKE $${params.length} OR 
+        proy.titulo ILIKE $${params.length}
+      )`;
+    }
+
+    sql += ' ORDER BY ee.id DESC';
+
+    const rows = await query<any>(sql, params);
+
+    const formatted = rows.map((r: any) => {
+      const edad = calculateAge(r.fecha_nacimiento);
+      return {
+        etapa_id: r.etapa_id,
+        postulacion_id: r.postulacion_id,
+        etapa_estado: r.etapa_estado === 'en revision' ? 'en_revision' : r.etapa_estado,
+        evaluador: r.evaluador,
+        comentarios: r.comentarios,
+        fecha_evaluacion: r.fecha_evaluacion,
+        postulacion_fecha: r.postulacion_fecha,
+        postulacion_estado: r.postulacion_estado,
+        postulante: {
+          id: r.postulante_id,
+          nombres: r.nombres,
+          apellidos: r.apellidos,
+          ci: r.ci,
+          email: r.email,
+          telefono: r.telefono,
+          fecha_nacimiento: r.fecha_nacimiento,
+          edad,
+          es_mayor_edad: edad >= 18,
+          profesion_ocupacion: r.profesion_ocupacion,
+          habilidades: r.habilidades,
+          motivacion: r.motivacion,
+        },
+        proyecto: {
+          id: r.proyecto_id,
+          titulo: r.proyecto_titulo,
+          ubicacion: r.proyecto_ubicacion,
+          es_mayor_edad: r.proyecto_es_mayor_edad,
+          organizacion_nombre: r.organizacion_nombre,
+        },
+      };
+    });
+
+    res.json(formatted);
+  } catch (err: any) {
+    console.error('Error fetching initial evaluations:', err);
+    res.status(500).json({ error: 'Error al consultar evaluaciones iniciales' });
+  }
+});
+
+// KIR-71: Registrar decisión y calificar etapa inicial de una postulación
+router.post('/evaluaciones/inicial/:postulacion_id', async (req: Request, res: Response) => {
+  try {
+    const { postulacion_id } = req.params;
+    const { estado, evaluador, comentarios, criterios } = req.body;
+
+    if (!['aprobado', 'observado', 'rechazado', 'en_revision'].includes(estado)) {
+      return res.status(400).json({ error: 'Estado de evaluación inicial inválido' });
+    }
+
+    if ((estado === 'rechazado' || estado === 'observado') && (!comentarios || comentarios.trim().length < 5)) {
+      return res.status(400).json({
+        error: `Debe detallar el motivo u observaciones ${estado === 'rechazado' ? 'del rechazo' : 'de la observación'} (mínimo 5 caracteres)`,
+      });
+    }
+
+    // Formatear comentarios con detalle de criterios si se enviaron
+    let observacionesCompletas = comentarios ? comentarios.trim() : '';
+    if (criterios && typeof criterios === 'object') {
+      const resumenCriterios = [
+        criterios.mayoria_edad_verificada ? 'Mayoría de edad: Conforme (+18)' : null,
+        criterios.identidad_ci_valida ? 'Identidad y CI: Verificados' : null,
+        criterios.carta_motivacion_apta ? 'Motivación: Apta' : null,
+        criterios.disponibilidad_confirmada ? 'Disponibilidad: Confirmada' : null,
+      ].filter(Boolean);
+
+      if (resumenCriterios.length > 0) {
+        observacionesCompletas = `[Verificación: ${resumenCriterios.join(' | ')}] ${observacionesCompletas}`.trim();
+      }
+    }
+
+    const evaluadorNombre = evaluador && evaluador.trim() ? evaluador.trim() : 'Comité de Admisiones Kirikú';
+
+    // 1. Actualizar la etapa 'inicial'
+    const updatedStage = await query<any>(
+      `UPDATE evaluaciones_etapas 
+       SET estado = $1, 
+           comentarios = $2, 
+           evaluador = $3, 
+           fecha_evaluacion = NOW()
+       WHERE postulacion_id = $4 AND etapa = 'inicial'
+       RETURNING *`,
+      [estado, observacionesCompletas || 'Evaluación inicial procesada por Comité Kirikú', evaluadorNombre, postulacion_id]
+    );
+
+    if (!updatedStage.length) {
+      return res.status(404).json({ error: 'No se encontró la etapa inicial para esta postulación' });
+    }
+
+    // 2. Transición del flujo según el resultado:
+    if (estado === 'aprobado') {
+      // Activar automáticamente la siguiente etapa ('tecnica') poniéndola en 'en_revision' si estaba 'pendiente'
+      await query(
+        `UPDATE evaluaciones_etapas 
+         SET estado = 'en_revision', fecha_evaluacion = NOW()
+         WHERE postulacion_id = $1 AND etapa = 'tecnica' AND estado = 'pendiente'`,
+        [postulacion_id]
+      );
+      // Mantener postulación general en 'en_proceso'
+      await query(
+        `UPDATE postulaciones 
+         SET estado_general = 'en_proceso', updated_at = NOW() 
+         WHERE id = $1`,
+        [postulacion_id]
+      );
+    } else if (estado === 'rechazado') {
+      // Si la etapa inicial es rechazada, toda la postulación se rechaza
+      await query(
+        `UPDATE postulaciones 
+         SET estado_general = 'rechazado', updated_at = NOW() 
+         WHERE id = $1`,
+        [postulacion_id]
+      );
+    } else if (estado === 'observado') {
+      // Postulación observada sigue en proceso pero con etapa observada
+      await query(
+        `UPDATE postulaciones 
+         SET estado_general = 'en_proceso', updated_at = NOW() 
+         WHERE id = $1`,
+        [postulacion_id]
+      );
+    }
+
+    res.json({
+      message: `Evaluación inicial registrada con éxito (${estado})`,
+      etapa: updatedStage[0],
+      postulacion_id: Number(postulacion_id),
+      estado_general: estado === 'rechazado' ? 'rechazado' : 'en_proceso',
+    });
+  } catch (err: any) {
+    console.error('Error recording initial evaluation:', err);
+    res.status(500).json({ error: 'Error al registrar evaluación inicial' });
+  }
+});
+
+
 // Calificar etapa de evaluación
-router.patch('/evaluaciones/:id', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
+router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { estado, comentarios, evaluador } = req.body;
@@ -1137,52 +1511,36 @@ router.patch('/evaluaciones/:id', authenticate, requirePermission('applications.
   }
 });
 
-// Reasignación y reenganche de voluntarios (KIR-90).
-const handleReasignacion = async (req: Request, res: Response, reenganche = false) => {
+// Reasignación de postulante (KIR: Reasignación)
+const handleReasignacion = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { nuevo_proyecto_id, es_reasignacion, es_reenganche } = req.body;
     const isReassigned = es_reasignacion !== undefined ? es_reasignacion : (es_reenganche !== undefined ? es_reenganche : true);
-    const changes = resolveWorkflowChanges(reenganche ? 'reenganche' : 'reasignacion', {
-      enabled: Boolean(nuevo_proyecto_id) || Boolean(isReassigned),
-      projectChanged: Boolean(nuevo_proyecto_id),
-    });
 
     if (nuevo_proyecto_id) {
-      const project = await query('SELECT id FROM proyectos WHERE id = $1 AND estado = \'aprobado\'', [nuevo_proyecto_id]);
-      if (!project.length) return res.status(400).json({ error: 'El nuevo proyecto no existe o no está aprobado' });
-    }
-
-    if (nuevo_proyecto_id) {
+      // Reasignar a otro proyecto
       const rows = await query(
         `UPDATE postulaciones 
          SET proyecto_id = $1, 
              es_reasignacion = true, 
-             estado_general = $2,
+             estado_general = 'reasignacion',
              updated_at = NOW() 
-         WHERE id = $3 
+         WHERE id = $2 
          RETURNING *`,
-        [nuevo_proyecto_id, changes.status, id]
+        [nuevo_proyecto_id, id]
       );
-      if (!rows.length) return res.status(404).json({ error: 'Postulación no encontrada' });
-      if (changes.restartTechnicalStage) {
-        await query(
-          `UPDATE evaluaciones_etapas SET estado = 'pendiente', comentarios = 'Etapa reiniciada por reenganche a un nuevo proyecto.', fecha_evaluacion = NOW()
-           WHERE postulacion_id = $1 AND etapa = 'tecnica'`, [id]
-        );
-      }
       return res.json(rows[0]);
     } else {
       const rows = await query(
         `UPDATE postulaciones 
          SET es_reasignacion = $1, 
-             estado_general = CASE WHEN $1 THEN $2 ELSE estado_general END,
+             estado_general = CASE WHEN $1 THEN 'reasignacion' ELSE estado_general END,
              updated_at = NOW() 
-         WHERE id = $3 
+         WHERE id = $2 
          RETURNING *`,
-        [changes.isReassigned, changes.status, id]
+        [isReassigned, id]
       );
-      if (!rows.length) return res.status(404).json({ error: 'Postulación no encontrada' });
       return res.json(rows[0]);
     }
   } catch (err: any) {
@@ -1191,30 +1549,11 @@ const handleReasignacion = async (req: Request, res: Response, reenganche = fals
   }
 };
 
-router.patch('/postulaciones/:id/reasignacion', authenticate, requirePermission('applications.manage'), (req, res) => handleReasignacion(req, res));
-router.patch('/postulaciones/:id/reenganche', authenticate, requirePermission('applications.manage'), (req, res) => handleReasignacion(req, res, true));
-
-// Reiniciar únicamente la etapa técnica al incorporar al voluntario a otro proyecto (KIR-92).
-router.post('/postulaciones/:id/reiniciar-etapa-tecnica', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const app = await query('SELECT id, estado_general FROM postulaciones WHERE id = $1', [id]);
-    if (!app.length) return res.status(404).json({ error: 'Postulación no encontrada' });
-    const rows = await query(
-      `UPDATE evaluaciones_etapas SET estado = 'pendiente', comentarios = 'Etapa técnica reiniciada para evaluar al voluntario en un nuevo proyecto.', fecha_evaluacion = NOW()
-       WHERE postulacion_id = $1 AND etapa = 'tecnica' RETURNING *`, [id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'No se encontró la etapa técnica de esta postulación' });
-    await query(`UPDATE postulaciones SET estado_general = 'en_proceso', updated_at = NOW() WHERE id = $1`, [id]);
-    res.json(rows[0]);
-  } catch (err: any) {
-    console.error('Error reiniciando etapa técnica:', err);
-    res.status(500).json({ error: 'Error al reiniciar la etapa técnica' });
-  }
-});
+router.patch('/postulaciones/:id/reasignacion', handleReasignacion);
+router.patch('/postulaciones/:id/reenganche', handleReasignacion);
 
 // Actualizar estado general de la postulación
-router.patch('/postulaciones/:id/status', authenticate, requirePermission('applications.manage'), async (req: Request, res: Response) => {
+router.patch('/postulaciones/:id/status', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { estado_general } = req.body;
@@ -1332,6 +1671,7 @@ router.get('/metrics', async (req: Request, res: Response) => {
   try {
     const totalProj = await query('SELECT COUNT(*) as c FROM proyectos');
     const aprobadosProj = await query("SELECT COUNT(*) as c FROM proyectos WHERE estado = 'aprobado'");
+    const publicadosProj = await query("SELECT COUNT(*) as c FROM proyectos WHERE estado = 'aprobado' AND publicado = true");
     const pendientesProj = await query("SELECT COUNT(*) as c FROM proyectos WHERE estado = 'pendiente_revision'");
     const totalPost = await query('SELECT COUNT(*) as c FROM postulantes');
     const appsEnProceso = await query("SELECT COUNT(*) as c FROM postulaciones WHERE estado_general = 'en_proceso'");
@@ -1343,6 +1683,7 @@ router.get('/metrics', async (req: Request, res: Response) => {
     res.json({
       totalProyectos: parseInt(totalProj[0].c, 10),
       proyectosAprobados: parseInt(aprobadosProj[0].c, 10),
+      proyectosPublicados: parseInt(publicadosProj[0].c, 10),
       proyectosPendientes: parseInt(pendientesProj[0].c, 10),
       totalPostulantes: parseInt(totalPost[0].c, 10),
       postulacionesEnProceso: parseInt(appsEnProceso[0].c, 10),

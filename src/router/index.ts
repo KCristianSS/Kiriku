@@ -9,8 +9,11 @@ import AdminDashboardView from '../views/admin/AdminDashboardView.vue';
 import ProjectReviewView from '../views/admin/ProjectReviewView.vue';
 import ApplicantsPoolView from '../views/admin/ApplicantsPoolView.vue';
 import RolesManagementView from '../views/admin/RolesManagementView.vue';
+import InitialEvaluationView from '../views/admin/InitialEvaluationView.vue';
+import PublishedProjectsView from '../views/admin/PublishedProjectsView.vue';
 import LoginView from '../views/LoginView.vue';
 import { supabaseAuth } from '../auth';
+
 
 const routes: RouteRecordRaw[] = [
   {
@@ -72,6 +75,19 @@ const routes: RouteRecordRaw[] = [
     component: RolesManagementView,
     meta: { requiresAuth: true },
   },
+  {
+    path: '/admin/evaluacion-inicial',
+    name: 'admin-initial-evaluation',
+    component: InitialEvaluationView,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/admin/publicacion',
+    name: 'admin-publish',
+    component: PublishedProjectsView,
+    meta: { requiresAuth: true },
+  },
+
   {
     path: '/:pathMatch(.*)*',
     redirect: '/',
