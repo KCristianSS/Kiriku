@@ -428,16 +428,17 @@ router.patch('/proyectos/:id/revision', authenticate, requirePermission('project
     }
 
     // Si se rechaza o reabre a pendiente_revision, despublicar automáticamente para proteger el catálogo
+    const isApproved = estado === 'aprobado';
     const rows = await query(
       `UPDATE proyectos 
-       SET estado = $1, 
-           motivo_rechazo = $2,
-           publicado = CASE WHEN $1 = 'aprobado' THEN publicado ELSE false END,
-           fecha_publicacion = CASE WHEN $1 = 'aprobado' THEN fecha_publicacion ELSE NULL END,
+       SET estado = $1::varchar, 
+           motivo_rechazo = $2::text,
+           publicado = CASE WHEN $3::boolean THEN publicado ELSE false END,
+           fecha_publicacion = CASE WHEN $3::boolean THEN fecha_publicacion ELSE NULL END,
            updated_at = NOW()
-       WHERE id = $3
+       WHERE id = $4
        RETURNING *`,
-      [estado, estado === 'rechazado' ? motivo_rechazo : null, id]
+      [estado, estado === 'rechazado' ? motivo_rechazo : null, isApproved, id]
     );
 
     if (!rows.length) {
@@ -483,8 +484,8 @@ router.patch('/proyectos/:id/publicacion', authenticate, requirePermission('proj
 
     const rows = await query(
       `UPDATE proyectos
-       SET publicado = $1,
-           fecha_publicacion = CASE WHEN $1 = true THEN COALESCE(fecha_publicacion, NOW()) ELSE NULL END,
+       SET publicado = $1::boolean,
+           fecha_publicacion = CASE WHEN $1::boolean = true THEN COALESCE(fecha_publicacion, NOW()) ELSE NULL END,
            updated_at = NOW()
        WHERE id = $2
        RETURNING *`,
@@ -1298,10 +1299,16 @@ router.get('/evaluaciones/inicial', async (req: Request, res: Response) => {
     const params: any[] = [];
 
     if (estado && typeof estado === 'string') {
-      if (estado === 'pendientes') {
-        sql += ` AND ee.estado IN ('pendiente', 'en_revision', 'en revision')`;
-      } else if (estado !== 'todos') {
-        params.push(estado);
+      const normalized = estado.trim().toLowerCase();
+      if (['pendiente', 'pendientes', 'pendiente_revision', 'en_revision', 'en revision', 'en revisión'].includes(normalized)) {
+        sql += ` AND ee.estado IN ('pendiente', 'pendiente_revision', 'en_revision', 'en revision', 'en revisión')`;
+      } else if (normalized !== 'todos') {
+        const estadoMap: Record<string, string> = {
+          aprobados: 'aprobado',
+          observados: 'observado',
+          rechazados: 'rechazado',
+        };
+        params.push(estadoMap[normalized] || normalized);
         sql += ` AND ee.estado = $${params.length}`;
       }
     }
@@ -1551,12 +1558,18 @@ router.get('/evaluaciones/tecnica', async (req: Request, res: Response) => {
     const params: any[] = [];
 
     if (estado && typeof estado === 'string') {
-      if (estado === 'pendientes') {
-        sql += ` AND ee_init.estado = 'aprobado' AND ee.estado IN ('pendiente', 'en_revision', 'en revision')`;
-      } else if (estado === 'bloqueadas') {
+      const normalized = estado.trim().toLowerCase();
+      if (['pendiente', 'pendientes', 'pendiente_revision', 'en_revision', 'en revision', 'en revisión'].includes(normalized)) {
+        sql += ` AND ee_init.estado = 'aprobado' AND ee.estado IN ('pendiente', 'pendiente_revision', 'en_revision', 'en revision', 'en revisión')`;
+      } else if (normalized === 'bloqueadas' || normalized === 'bloqueada') {
         sql += ` AND ee_init.estado != 'aprobado' AND ee.estado = 'pendiente'`;
-      } else if (estado !== 'todos') {
-        params.push(estado);
+      } else if (normalized !== 'todos') {
+        const estadoMap: Record<string, string> = {
+          aprobados: 'aprobado',
+          observados: 'observado',
+          rechazados: 'rechazado',
+        };
+        params.push(estadoMap[normalized] || normalized);
         sql += ` AND ee.estado = $${params.length}`;
       }
     }
@@ -2019,7 +2032,7 @@ router.get('/roles/users', authenticate, requirePermission('users.manage_roles')
        FULL OUTER JOIN auth.users u ON u.id = pu.id
        LEFT JOIN user_roles ur ON ur.user_id = COALESCE(pu.id, u.id)
        LEFT JOIN roles r ON r.id = ur.role_id
-       WHERE ($1 = '' OR COALESCE(pu.email, u.email) ILIKE '%' || $1 || '%' OR COALESCE(pu.nombre, '') ILIKE '%' || $1 || '%')
+       WHERE ($1::text = '' OR COALESCE(pu.email, u.email) ILIKE '%' || $1::text || '%' OR COALESCE(pu.nombre, '') ILIKE '%' || $1::text || '%')
        GROUP BY pu.id, u.id, pu.email, u.email, pu.nombre, u.raw_user_meta_data
        ORDER BY COALESCE(pu.email, u.email) LIMIT 50`,
       [search]
