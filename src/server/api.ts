@@ -5,12 +5,21 @@ import { authenticate, requirePermission } from './authorization';
 const router: Router = express.Router();
 
 // Helper to calculate age from birth date
-function calculateAge(birthDateString: string): number {
+function calculateAge(birthDateString: string | Date): number {
   const today = new Date();
+  if (typeof birthDateString === 'string' && /^\d{4}-\d{2}-\d{2}/.test(birthDateString)) {
+    const [birthYear, birthMonth, birthDay] = birthDateString.split('T')[0].split('-').map(Number);
+    let age = today.getFullYear() - birthYear;
+    const m = (today.getMonth() + 1) - birthMonth;
+    if (m < 0 || (m === 0 && today.getDate() < birthDay)) {
+      age--;
+    }
+    return age;
+  }
   const birthDate = new Date(birthDateString);
-  let age = today.getFullYear() - birthDate.getFullYear();
-  const m = today.getMonth() - birthDate.getMonth();
-  if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+  let age = today.getFullYear() - birthDate.getUTCFullYear();
+  const m = (today.getMonth() + 1) - (birthDate.getUTCMonth() + 1);
+  if (m < 0 || (m === 0 && today.getDate() < birthDate.getUTCDate())) {
     age--;
   }
   return age;

@@ -103,12 +103,19 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
   // HISTORIA 2: KIR-17 - Validar mayoría de edad antes de postular
   // -------------------------------------------------------------
   describe('KIR-17: Validar mayoría de edad antes de postular', () => {
+    function formatLocalYmd(d: Date): string {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
     function calcularEdad(fechaNac: string): number {
       const hoy = new Date();
-      const cumple = new Date(fechaNac);
-      let edad = hoy.getFullYear() - cumple.getFullYear();
-      const m = hoy.getMonth() - cumple.getMonth();
-      if (m < 0 || (m === 0 && hoy.getDate() < cumple.getDate())) {
+      const [birthYear, birthMonth, birthDay] = fechaNac.split('T')[0].split('-').map(Number);
+      let edad = hoy.getFullYear() - birthYear;
+      const m = (hoy.getMonth() + 1) - birthMonth;
+      if (m < 0 || (m === 0 && hoy.getDate() < birthDay)) {
         edad--;
       }
       return edad;
@@ -116,7 +123,7 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
 
     it('KIR-101: Escenario 1 - Persona menor de 18 años (17 años) debe ser RECHAZADA', () => {
       const hoy = new Date();
-      const fecha17 = new Date(hoy.getFullYear() - 17, hoy.getMonth(), hoy.getDate()).toISOString().split('T')[0];
+      const fecha17 = formatLocalYmd(new Date(hoy.getFullYear() - 17, hoy.getMonth(), hoy.getDate()));
       const edad = calcularEdad(fecha17);
       assert.equal(edad, 17, 'Debe tener exactamente 17 años');
       assert.equal(edad >= 18, false, 'No debe cumplir la mayoría de edad');
@@ -124,7 +131,7 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
 
     it('KIR-101: Escenario 2 - Persona que cumple 18 años hoy debe ser ADMITIDA', () => {
       const hoy = new Date();
-      const fecha18 = new Date(hoy.getFullYear() - 18, hoy.getMonth(), hoy.getDate()).toISOString().split('T')[0];
+      const fecha18 = formatLocalYmd(new Date(hoy.getFullYear() - 18, hoy.getMonth(), hoy.getDate()));
       const edad = calcularEdad(fecha18);
       assert.equal(edad, 18, 'Debe tener exactamente 18 años hoy');
       assert.equal(edad >= 18, true, 'Debe cumplir la mayoría de edad');
@@ -132,7 +139,7 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
 
     it('KIR-101: Escenario 3 - Persona que cumple 18 mañana aún tiene 17 y debe ser RECHAZADA', () => {
       const hoy = new Date();
-      const manana = new Date(hoy.getFullYear() - 18, hoy.getMonth(), hoy.getDate() + 1).toISOString().split('T')[0];
+      const manana = formatLocalYmd(new Date(hoy.getFullYear() - 18, hoy.getMonth(), hoy.getDate() + 1));
       const edad = calcularEdad(manana);
       assert.equal(edad, 17, 'Aún tiene 17 años el día de hoy');
       assert.equal(edad >= 18, false, 'No debe cumplir la mayoría de edad');
@@ -140,7 +147,7 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
 
     it('KIR-101: Escenario 4 - Adulto de 25 años debe ser ADMITIDO', () => {
       const hoy = new Date();
-      const fecha25 = new Date(hoy.getFullYear() - 25, 0, 1).toISOString().split('T')[0];
+      const fecha25 = formatLocalYmd(new Date(hoy.getFullYear() - 25, 0, 1));
       const edad = calcularEdad(fecha25);
       assert.ok(edad >= 24, 'Debe ser mayor de edad');
       assert.equal(edad >= 18, true, 'Debe cumplir la mayoría de edad');
