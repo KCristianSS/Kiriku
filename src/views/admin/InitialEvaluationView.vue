@@ -46,9 +46,10 @@ const metrics = ref({
 });
 
 // Filters
-const selectedFilter = ref<'pendientes' | 'aprobados' | 'observados' | 'rechazados' | 'todos'>('pendientes');
+const selectedFilter = ref<'pendientes' | 'aprobado' | 'observado' | 'rechazado' | 'todos'>('pendientes');
 const selectedProject = ref('todos');
 const searchQuery = ref('');
+let latestRequestId = 0;
 
 // Evaluation Modal State
 const selectedItem = ref<EvaluacionInicialItem | null>(null);
@@ -74,6 +75,7 @@ const quickPresets = [
 ];
 
 async function loadData() {
+  const requestId = ++latestRequestId;
   loading.value = true;
   error.value = null;
   try {
@@ -87,13 +89,17 @@ async function loadData() {
       api.getProyectos({ estado: 'aprobado' }).catch(() => []),
     ]);
 
+    if (requestId !== latestRequestId) return;
     evaluations.value = evalsData;
     metrics.value = metricsData;
     projects.value = projsData;
   } catch (err: any) {
+    if (requestId !== latestRequestId) return;
     error.value = err?.response?.data?.error || 'No se pudieron cargar las evaluaciones iniciales.';
   } finally {
-    loading.value = false;
+    if (requestId === latestRequestId) {
+      loading.value = false;
+    }
   }
 }
 
@@ -149,6 +155,23 @@ function getStageLabel(estado: string) {
       return 'Rechazado';
     default:
       return estado;
+  }
+}
+
+function getFilterLabel(filterKey: string) {
+  switch (filterKey) {
+    case 'pendientes':
+      return 'Pendientes de Revisión';
+    case 'aprobado':
+      return 'Aprobados';
+    case 'observado':
+      return 'Observados';
+    case 'rechazado':
+      return 'Rechazados';
+    case 'todos':
+      return 'Todas';
+    default:
+      return filterKey;
   }
 }
 
@@ -357,8 +380,8 @@ async function handleSaveEvaluation() {
           </button>
 
           <button
-            @click="selectedFilter = 'aprobados'; loadData()"
-            :class="selectedFilter === 'aprobados' ? 'bg-emerald-600 text-white font-bold shadow-xs' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'"
+            @click="selectedFilter = 'aprobado'; loadData()"
+            :class="selectedFilter === 'aprobado' ? 'bg-emerald-600 text-white font-bold shadow-xs' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'"
             class="px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-2 transition-all cursor-pointer"
           >
             <span>Aprobados</span>
@@ -368,8 +391,8 @@ async function handleSaveEvaluation() {
           </button>
 
           <button
-            @click="selectedFilter = 'observados'; loadData()"
-            :class="selectedFilter === 'observados' ? 'bg-orange-500 text-white font-bold shadow-xs' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'"
+            @click="selectedFilter = 'observado'; loadData()"
+            :class="selectedFilter === 'observado' ? 'bg-orange-500 text-white font-bold shadow-xs' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'"
             class="px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-2 transition-all cursor-pointer"
           >
             <span>Observados</span>
@@ -379,8 +402,8 @@ async function handleSaveEvaluation() {
           </button>
 
           <button
-            @click="selectedFilter = 'rechazados'; loadData()"
-            :class="selectedFilter === 'rechazados' ? 'bg-rose-600 text-white font-bold shadow-xs' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'"
+            @click="selectedFilter = 'rechazado'; loadData()"
+            :class="selectedFilter === 'rechazado' ? 'bg-rose-600 text-white font-bold shadow-xs' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'"
             class="px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-2 transition-all cursor-pointer"
           >
             <span>Rechazados</span>
@@ -455,7 +478,7 @@ async function handleSaveEvaluation() {
         </div>
         <h3 class="text-lg font-bold text-stone-800 mb-1">No hay postulaciones en esta bandeja</h3>
         <p class="text-sm text-stone-500 max-w-md mx-auto">
-          No se encontraron registros que coincidan con el estado "{{ selectedFilter }}" o los filtros de búsqueda aplicados.
+          No se encontraron registros que coincidan con el estado "{{ getFilterLabel(selectedFilter) }}" o los filtros de búsqueda aplicados.
         </p>
       </div>
 
