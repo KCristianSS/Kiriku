@@ -102,8 +102,9 @@ router.post('/organizaciones', authenticate, requirePermission('projects.review'
 });
 
 // -------------------------------------------------------------
-// 2. PROYECTOS (Catálogo, Propuestas, Revisión)
+// 2. PROYECTOS (Catálogo, Propuestas, Revisión, Seguimiento)
 // -------------------------------------------------------------
+// KIR-23 (KIR-74 & KIR-75): Consulta de seguimiento del proyecto inscrito por organización
 router.get('/proyectos/tracking', async (req: Request, res: Response) => {
   try {
     const busqueda = typeof req.query.busqueda === 'string' ? req.query.busqueda.trim() : '';
@@ -112,8 +113,10 @@ router.get('/proyectos/tracking', async (req: Request, res: Response) => {
     }
 
     const rows = await query(
-      `SELECT p.id, p.titulo, p.ubicacion, p.estado, p.motivo_rechazo,
-              p.created_at, p.updated_at, o.nombre AS organizacion_nombre
+      `SELECT p.id, p.titulo, p.ubicacion, p.cupos_disponibles,
+              p.estado, COALESCE(p.publicado, false) AS publicado, p.fecha_publicacion,
+              p.motivo_rechazo, p.created_at, p.updated_at,
+              o.nombre AS organizacion_nombre
        FROM proyectos p
        JOIN organizaciones o ON o.id = p.organizacion_id
        WHERE LOWER(TRIM(o.contacto_email)) = LOWER($1)
@@ -1448,6 +1451,288 @@ router.post('/evaluaciones/inicial/:postulacion_id', async (req: Request, res: R
   } catch (err: any) {
     console.error('Error recording initial evaluation:', err);
     res.status(500).json({ error: 'Error al registrar evaluación inicial' });
+  }
+});
+
+// -------------------------------------------------------------
+// EVALUACIÓN TÉCNICA SOCIO TERRITORIAL (HISTORIA KIR-25: KIR-66, KIR-67, KIR-68)
+// -------------------------------------------------------------
+
+// KIR-67: Métricas de la etapa técnica
+router.get('/evaluaciones/tecnica/metricas', async (_req: Request, res: Response) => {
+  try {
+    const stats = await query<{
+      total: string;
+      disponibles: string;
+      bloqueadas: string;
+      pendientes: string;
+      aprobados: string;
+      observados: string;
+      rechazados: string;
+    }>(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(CASE WHEN ee_init.estado = 'aprobado' THEN 1 END) as disponibles,
+        COUNT(CASE WHEN ee_init.estado != 'aprobado' AND ee.estado = 'pendiente' THEN 1 END) as bloqueadas,
+        COUNT(CASE WHEN ee_init.estado = 'aprobado' AND ee.estado IN ('pendiente', 'en_revision', 'en revision') THEN 1 END) as pendientes,
+        COUNT(CASE WHEN ee.estado = 'aprobado' THEN 1 END) as aprobados,
+        COUNT(CASE WHEN ee.estado = 'observado' THEN 1 END) as observados,
+        COUNT(CASE WHEN ee.estado = 'rechazado' THEN 1 END) as rechazados
+      FROM evaluaciones_etapas ee
+      JOIN evaluaciones_etapas ee_init ON ee_init.postulacion_id = ee.postulacion_id AND ee_init.etapa = 'inicial'
+      WHERE ee.etapa = 'tecnica'
+    `);
+
+    res.json({
+      total: parseInt(stats[0]?.total || '0', 10),
+      disponibles: parseInt(stats[0]?.disponibles || '0', 10),
+      bloqueadas: parseInt(stats[0]?.bloqueadas || '0', 10),
+      pendientes: parseInt(stats[0]?.pendientes || '0', 10),
+      aprobados: parseInt(stats[0]?.aprobados || '0', 10),
+      observados: parseInt(stats[0]?.observados || '0', 10),
+      rechazados: parseInt(stats[0]?.rechazados || '0', 10),
+    });
+  } catch (err: any) {
+    console.error('Error fetching metricas tecnicas:', err);
+    res.status(500).json({ error: 'Error al consultar métricas de evaluación técnica' });
+  }
+});
+
+// KIR-67: Consulta y listado de postulaciones para Socio Territorial en etapa técnica
+router.get('/evaluaciones/tecnica', async (req: Request, res: Response) => {
+  try {
+    const { estado, proyecto_id, q } = req.query;
+
+    let sql = `
+      SELECT ee.id as etapa_id,
+             ee.postulacion_id,
+             ee.estado as etapa_estado,
+             ee.evaluador,
+             ee.comentarios,
+             ee.fecha_evaluacion,
+             ee_init.estado as inicial_estado,
+             ee_init.comentarios as inicial_comentarios,
+             ee_init.evaluador as inicial_evaluador,
+             app.created_at as postulacion_fecha,
+             app.estado_general as postulacion_estado,
+             p.id as postulante_id,
+             p.nombres,
+             p.apellidos,
+             p.ci,
+             p.email,
+             p.telefono,
+             p.fecha_nacimiento,
+             p.profesion_ocupacion,
+             p.habilidades,
+             p.motivacion,
+             proy.id as proyecto_id,
+             proy.titulo as proyecto_titulo,
+             proy.ubicacion as proyecto_ubicacion,
+             proy.cupos_disponibles as proyecto_cupos,
+             proy.organizacion_id,
+             org.nombre as organizacion_nombre
+      FROM evaluaciones_etapas ee
+      JOIN evaluaciones_etapas ee_init ON ee_init.postulacion_id = ee.postulacion_id AND ee_init.etapa = 'inicial'
+      JOIN postulaciones app ON app.id = ee.postulacion_id
+      JOIN postulantes p ON p.id = app.postulante_id
+      JOIN proyectos proy ON proy.id = app.proyecto_id
+      LEFT JOIN organizaciones org ON org.id = proy.organizacion_id
+      WHERE ee.etapa = 'tecnica'
+    `;
+    const params: any[] = [];
+
+    if (estado && typeof estado === 'string') {
+      if (estado === 'pendientes') {
+        sql += ` AND ee_init.estado = 'aprobado' AND ee.estado IN ('pendiente', 'en_revision', 'en revision')`;
+      } else if (estado === 'bloqueadas') {
+        sql += ` AND ee_init.estado != 'aprobado' AND ee.estado = 'pendiente'`;
+      } else if (estado !== 'todos') {
+        params.push(estado);
+        sql += ` AND ee.estado = $${params.length}`;
+      }
+    }
+
+    if (proyecto_id) {
+      params.push(proyecto_id);
+      sql += ` AND proy.id = $${params.length}`;
+    }
+
+    if (q && typeof q === 'string' && q.trim()) {
+      params.push(`%${q.trim()}%`);
+      sql += ` AND (
+        p.nombres ILIKE $${params.length} OR
+        p.apellidos ILIKE $${params.length} OR
+        p.ci ILIKE $${params.length} OR
+        COALESCE(p.profesion_ocupacion, '') ILIKE $${params.length} OR
+        COALESCE(p.habilidades, '') ILIKE $${params.length} OR
+        proy.titulo ILIKE $${params.length} OR
+        COALESCE(org.nombre, '') ILIKE $${params.length}
+      )`;
+    }
+
+    sql += ' ORDER BY ee.id DESC';
+
+    const rows = await query<any>(sql, params);
+
+    const formatted = rows.map((r: any) => {
+      const edad = calculateAge(r.fecha_nacimiento);
+      const puedeEvaluar = r.inicial_estado === 'aprobado';
+      return {
+        etapa_id: r.etapa_id,
+        postulacion_id: r.postulacion_id,
+        etapa_estado: r.etapa_estado === 'en revision' ? 'en_revision' : r.etapa_estado,
+        evaluador: r.evaluador,
+        comentarios: r.comentarios,
+        fecha_evaluacion: r.fecha_evaluacion,
+        postulacion_fecha: r.postulacion_fecha,
+        postulacion_estado: r.postulacion_estado,
+        inicial_estado: r.inicial_estado,
+        inicial_comentarios: r.inicial_comentarios,
+        inicial_evaluador: r.inicial_evaluador,
+        puede_evaluar: puedeEvaluar,
+        postulante: {
+          id: r.postulante_id,
+          nombres: r.nombres,
+          apellidos: r.apellidos,
+          ci: r.ci,
+          email: r.email,
+          telefono: r.telefono,
+          fecha_nacimiento: r.fecha_nacimiento,
+          edad,
+          es_mayor_edad: edad >= 18,
+          profesion_ocupacion: r.profesion_ocupacion,
+          habilidades: r.habilidades,
+          motivacion: r.motivacion,
+        },
+        proyecto: {
+          id: r.proyecto_id,
+          titulo: r.proyecto_titulo,
+          ubicacion: r.proyecto_ubicacion,
+          cupos_disponibles: r.proyecto_cupos,
+          organizacion_id: r.organizacion_id,
+          organizacion_nombre: r.organizacion_nombre,
+        },
+      };
+    });
+
+    res.json(formatted);
+  } catch (err: any) {
+    console.error('Error fetching technical evaluations:', err);
+    res.status(500).json({ error: 'Error al consultar evaluaciones técnicas' });
+  }
+});
+
+// KIR-67: Registrar decisión técnica del Socio Territorial y desbloquear Entrevista Personal
+router.post('/evaluaciones/tecnica/:postulacion_id', async (req: Request, res: Response) => {
+  try {
+    const { postulacion_id } = req.params;
+    const { estado, evaluador, comentarios, puntaje_tecnico, criterios } = req.body;
+
+    if (!['aprobado', 'observado', 'rechazado', 'en_revision'].includes(estado)) {
+      return res.status(400).json({ error: 'Estado de evaluación técnica inválido' });
+    }
+
+    if ((estado === 'rechazado' || estado === 'observado') && (!comentarios || comentarios.trim().length < 5)) {
+      return res.status(400).json({
+        error: `Debe detallar las observaciones técnicas o motivo ${estado === 'rechazado' ? 'del rechazo' : 'de la observación'} (mínimo 5 caracteres)`,
+      });
+    }
+
+    // Verificar precondición: etapa inicial debe estar aprobada
+    const initRows = await query<{ estado: string }>(
+      `SELECT estado FROM evaluaciones_etapas WHERE postulacion_id = $1 AND etapa = 'inicial'`,
+      [postulacion_id]
+    );
+    if (!initRows.length) {
+      return res.status(404).json({ error: 'No se encontró la postulación o etapa inicial asociada' });
+    }
+    if (initRows[0].estado !== 'aprobado') {
+      return res.status(400).json({
+        error: 'La etapa inicial debe estar aprobada antes de registrar la evaluación técnica',
+      });
+    }
+
+    let observacionesCompletas = comentarios ? comentarios.trim() : '';
+    const detallesTecnicos: string[] = [];
+
+    if (typeof puntaje_tecnico === 'number' && !isNaN(puntaje_tecnico)) {
+      const score = Math.max(0, Math.min(100, Math.round(puntaje_tecnico)));
+      detallesTecnicos.push(`Puntaje Técnico: ${score}/100`);
+    }
+
+    if (criterios && typeof criterios === 'object') {
+      if (criterios.experiencia_afin) detallesTecnicos.push('Experiencia Afín: Sí');
+      if (criterios.competencias_tecnicas) detallesTecnicos.push('Competencias Técnicas: Aptas');
+      if (criterios.disponibilidad_territorial) detallesTecnicos.push('Disponibilidad Territorial: Confirmada');
+      if (criterios.capacidad_trabajo_campo) detallesTecnicos.push('Trabajo de Campo: Apto');
+    }
+
+    if (detallesTecnicos.length > 0) {
+      observacionesCompletas = `[Socio Territorial: ${detallesTecnicos.join(' | ')}] ${observacionesCompletas}`.trim();
+    }
+
+    const evaluadorNombre =
+      evaluador && evaluador.trim() ? evaluador.trim() : 'Socio Territorial / Coordinador de Proyecto';
+
+    const updatedStage = await query<any>(
+      `UPDATE evaluaciones_etapas
+       SET estado = $1,
+           comentarios = $2,
+           evaluador = $3,
+           fecha_evaluacion = NOW()
+       WHERE postulacion_id = $4 AND etapa = 'tecnica'
+       RETURNING *`,
+      [
+        estado,
+        observacionesCompletas || 'Evaluación técnica validada por Socio Territorial',
+        evaluadorNombre,
+        postulacion_id,
+      ]
+    );
+
+    if (!updatedStage.length) {
+      return res.status(404).json({ error: 'No se encontró la etapa técnica para esta postulación' });
+    }
+
+    if (estado === 'aprobado') {
+      // Activar automáticamente la etapa 3 ('personal') poniéndola en 'en_revision' si estaba 'pendiente'
+      await query(
+        `UPDATE evaluaciones_etapas
+         SET estado = 'en_revision', fecha_evaluacion = NOW()
+         WHERE postulacion_id = $1 AND etapa = 'personal' AND estado = 'pendiente'`,
+        [postulacion_id]
+      );
+      await query(
+        `UPDATE postulaciones
+         SET estado_general = 'en_proceso', updated_at = NOW()
+         WHERE id = $1`,
+        [postulacion_id]
+      );
+    } else if (estado === 'rechazado') {
+      await query(
+        `UPDATE postulaciones
+         SET estado_general = 'rechazado', updated_at = NOW()
+         WHERE id = $1`,
+        [postulacion_id]
+      );
+    } else if (estado === 'observado') {
+      await query(
+        `UPDATE postulaciones
+         SET estado_general = 'en_proceso', updated_at = NOW()
+         WHERE id = $1`,
+        [postulacion_id]
+      );
+    }
+
+    res.json({
+      message: `Evaluación técnica registrada con éxito (${estado})`,
+      etapa: updatedStage[0],
+      postulacion_id: Number(postulacion_id),
+      estado_general: estado === 'rechazado' ? 'rechazado' : 'en_proceso',
+    });
+  } catch (err: any) {
+    console.error('Error recording technical evaluation:', err);
+    res.status(500).json({ error: 'Error al registrar evaluación técnica' });
   }
 });
 
