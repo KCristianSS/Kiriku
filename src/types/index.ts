@@ -139,6 +139,49 @@ export interface RegistrarEvaluacionInicialPayload {
   };
 }
 
+// KIR-66: Estructura de evaluación técnica (Socio Territorial)
+export interface EvaluacionTecnicaCriterios {
+  experiencia_afin?: boolean;
+  disponibilidad_territorial?: boolean;
+  competencias_tecnicas?: boolean;
+  capacidad_trabajo_campo?: boolean;
+}
+
+export interface EvaluacionTecnicaItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  postulacion_fecha: string;
+  postulacion_estado: PostulacionEstado;
+  inicial_estado: EtapaEstado | string;
+  inicial_comentarios?: string | null;
+  inicial_evaluador?: string | null;
+  puede_evaluar: boolean;
+  postulante: Postulante & {
+    edad: number;
+    es_mayor_edad: boolean;
+  };
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    cupos_disponibles?: number;
+    organizacion_id?: number | string | null;
+    organizacion_nombre?: string | null;
+  };
+}
+
+export interface RegistrarEvaluacionTecnicaPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado' | 'en_revision';
+  evaluador: string;
+  comentarios: string;
+  puntaje_tecnico?: number;
+  criterios?: EvaluacionTecnicaCriterios;
+}
+
 
 export interface Postulacion {
   id: number | string;

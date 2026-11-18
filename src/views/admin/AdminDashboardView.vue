@@ -21,6 +21,7 @@ import {
   UserPlus,
   LogOut,
   Globe,
+  Wrench,
 } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -203,6 +204,26 @@ onMounted(() => {
           </div>
         </div>
         <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-teal-600 group-hover:translate-x-1 transition-all shrink-0" />
+      </router-link>
+
+      <router-link
+        to="/admin/evaluacion-tecnica"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#F58F38] p-5 shadow-xs transition-all flex items-center justify-between group"
+      >
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-amber-50 text-[#F58F38] rounded-xl flex items-center justify-center shrink-0">
+            <Wrench class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-[#F58F38] transition-colors">
+              Evaluación Técnica
+            </h3>
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Valoración técnica por Socio Territorial y paso a entrevista (KIR-25).
+            </p>
+          </div>
+        </div>
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#F58F38] group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
 
       <router-link
