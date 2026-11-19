@@ -178,8 +178,6 @@ function handleResetForm() {
   submittedProject.value = null;
   errorMsg.value = null;
 }
-import { RouterLink } from 'vue-router';
-import { Building2, Sparkles } from 'lucide-vue-next';
 </script>
 
 <template>
@@ -196,10 +194,18 @@ import { Building2, Sparkles } from 'lucide-vue-next';
           <span>Volver al Catálogo de Proyectos</span>
         </router-link>
 
-        <span class="text-xs font-semibold px-3 py-1 rounded-full bg-[#E8F6F8] text-[#1E7B85] border border-[#289EAB]/20 flex items-center gap-1.5">
-          <Sparkles class="w-3.5 h-3.5 text-[#F58F38]" />
-          <span>KIR-106 • Épica KIR-3</span>
-        </span>
+        <div class="flex items-center gap-2">
+          <router-link
+            to="/seguimiento-proyecto"
+            class="text-xs font-semibold px-3 py-1.5 rounded-full bg-white text-[#1E7B85] border border-[#289EAB]/30 hover:bg-[#E8F6F8] transition-colors"
+          >
+            Consultar seguimiento de un proyecto
+          </router-link>
+          <span class="text-xs font-semibold px-3 py-1 rounded-full bg-[#E8F6F8] text-[#1E7B85] border border-[#289EAB]/20 flex items-center gap-1.5">
+            <Sparkles class="w-3.5 h-3.5 text-[#F58F38]" />
+            <span>KIR-106 • Épica KIR-3</span>
+          </span>
+        </div>
       </div>
 
       <!-- SUCCESS CONFIRMATION SCREEN (KIR-108) -->
@@ -253,6 +259,13 @@ import { Building2, Sparkles } from 'lucide-vue-next';
         <!-- Action Buttons -->
         <div class="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
           <router-link
+            to="/seguimiento-proyecto"
+            class="w-full sm:w-auto px-6 py-2.5 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-sm font-semibold rounded-xl transition-all shadow-xs"
+          >
+            Consultar seguimiento de proyecto
+          </router-link>
+
+          <router-link
             to="/admin/revision"
             class="w-full sm:w-auto px-6 py-2.5 bg-[#0D9488] hover:bg-[#0F766E] text-white text-sm font-semibold rounded-xl transition-all shadow-xs"
           >
@@ -266,15 +279,6 @@ import { Building2, Sparkles } from 'lucide-vue-next';
             Proponer otro proyecto
           </button>
         </div>
-      <RouterLink
-        to="/seguimiento-proyecto"
-        class="inline-flex items-center justify-center px-5 py-2.5 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-sm font-semibold rounded-xl transition-colors"
-      >
-        Consultar seguimiento de un proyecto inscrito
-      </RouterLink>
-
-      <div class="inline-flex items-center text-xs text-stone-500 font-mono bg-stone-100 border border-stone-200 px-3.5 py-1.5 rounded-lg">
-        src/views/ProposeProjectView.vue
       </div>
 
       <!-- MAIN FORM: REGISTRAR PROPUESTA DE PROYECTO (KIR-107 & KIR-109) -->
