@@ -1,7 +1,19 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { api } from '../api/client';
-import { Search, Building2, Clock3, CheckCircle2, XCircle, AlertCircle, CalendarDays } from 'lucide-vue-next';
+import {
+  Search,
+  Building2,
+  Clock3,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  CalendarDays,
+  Globe,
+  EyeOff,
+  MapPin,
+  Users,
+} from 'lucide-vue-next';
 
 type ProjectProposal = Awaited<ReturnType<typeof api.trackProjectProposals>>[number];
 
@@ -11,26 +23,46 @@ const loading = ref(false);
 const searched = ref(false);
 const error = ref('');
 
-const statusDetails = {
-  pendiente_revision: {
+// KIR-74: Definición de estados visibles del proyecto para organizaciones aliadas
+function getVisibleStatus(project: ProjectProposal) {
+  if (project.estado === 'rechazado') {
+    return {
+      label: 'Rechazado',
+      style: 'bg-rose-50 text-rose-800 border-rose-200',
+      icon: XCircle,
+      message: 'La propuesta no fue aprobada en la revisión administrativa.',
+      badgePub: null,
+    };
+  }
+
+  if (project.estado === 'aprobado' && project.publicado) {
+    return {
+      label: 'Aprobado y publicado',
+      style: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+      icon: Globe,
+      message: 'Tu proyecto fue aprobado y ya se encuentra publicado en el catálogo público para postulaciones.',
+      badgePub: 'Visible en catálogo',
+    };
+  }
+
+  if (project.estado === 'aprobado') {
+    return {
+      label: 'Aprobado · Sin publicar',
+      style: 'bg-[#E8F6F8] text-[#1E7B85] border-[#289EAB]/30',
+      icon: CheckCircle2,
+      message: 'La propuesta fue aprobada en auditoría y está lista para ser publicada en el catálogo oficial.',
+      badgePub: 'Pendiente de publicación',
+    };
+  }
+
+  return {
     label: 'En revisión',
     style: 'bg-amber-50 text-amber-800 border-amber-200',
     icon: Clock3,
     message: 'El equipo de Kirikú todavía está revisando esta propuesta.',
-  },
-  aprobado: {
-    label: 'Aprobado',
-    style: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-    icon: CheckCircle2,
-    message: 'La propuesta fue aprobada y podrá formar parte del catálogo de proyectos.',
-  },
-  rechazado: {
-    label: 'Rechazado',
-    style: 'bg-rose-50 text-rose-800 border-rose-200',
-    icon: XCircle,
-    message: 'La propuesta no fue aprobada.',
-  },
-} as const;
+    badgePub: null,
+  };
+}
 
 async function search() {
   const query = email.value.trim();
@@ -49,7 +81,7 @@ async function search() {
   }
 }
 
-function formatDate(value?: string) {
+function formatDate(value?: string | null) {
   if (!value) return 'Sin fecha registrada';
   return new Date(value).toLocaleDateString('es-BO', { year: 'numeric', month: 'long', day: 'numeric' });
 }
@@ -62,11 +94,13 @@ function formatDate(value?: string) {
       <div class="max-w-2xl">
         <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E8F6F8] text-[#1E7B85] text-xs font-semibold mb-3">
           <Building2 class="w-3.5 h-3.5" />
-          <span>Organizaciones aliadas</span>
+          <span>Organizaciones aliadas · KIR-23</span>
         </div>
-        <h1 class="text-2xl sm:text-3xl font-extrabold text-stone-900 tracking-tight mb-2">Seguimiento de proyecto inscrito</h1>
+        <h1 class="text-2xl sm:text-3xl font-extrabold text-stone-900 tracking-tight mb-2">
+          Seguimiento de proyecto inscrito
+        </h1>
         <p class="text-stone-600 text-sm leading-relaxed mb-6">
-          Consulta el estado de revisión de los proyectos enviados con el correo de contacto registrado para la organización.
+          Consulta el estado de revisión y publicación de los proyectos enviados con el correo de contacto registrado para tu organización.
         </p>
 
         <form @submit.prevent="search" class="flex flex-col sm:flex-row gap-3">
@@ -107,30 +141,66 @@ function formatDate(value?: string) {
     </section>
 
     <section v-else-if="proposals.length" class="space-y-4" aria-live="polite">
-      <article v-for="project in proposals" :key="project.id" class="bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-xs">
+      <article
+        v-for="project in proposals"
+        :key="project.id"
+        class="bg-white rounded-3xl border border-stone-200 overflow-hidden shadow-xs"
+      >
         <div class="p-6 sm:p-8">
           <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
             <div>
               <p class="text-xs text-[#1E7B85] font-semibold mb-1">{{ project.organizacion_nombre }}</p>
               <h2 class="text-xl font-bold text-stone-900">{{ project.titulo }}</h2>
-              <p class="text-sm text-stone-600 mt-1">{{ project.ubicacion }}</p>
+              <div class="flex flex-wrap items-center gap-3 text-xs text-stone-500 mt-1.5">
+                <span class="inline-flex items-center gap-1">
+                  <MapPin class="w-3.5 h-3.5 text-stone-400" />
+                  {{ project.ubicacion }}
+                </span>
+                <span v-if="project.cupos_disponibles" class="inline-flex items-center gap-1">
+                  <Users class="w-3.5 h-3.5 text-stone-400" />
+                  {{ project.cupos_disponibles }} cupos
+                </span>
+              </div>
             </div>
-            <span :class="['self-start inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-bold', statusDetails[project.estado]?.style || 'bg-stone-50 text-stone-700 border-stone-200']">
-              <component :is="statusDetails[project.estado]?.icon || AlertCircle" class="w-4 h-4" />
-              {{ statusDetails[project.estado]?.label || project.estado }}
-            </span>
+
+            <div class="flex flex-wrap items-center gap-2 self-start">
+              <span
+                :class="[
+                  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-bold',
+                  getVisibleStatus(project).style,
+                ]"
+              >
+                <component :is="getVisibleStatus(project).icon" class="w-4 h-4" />
+                {{ getVisibleStatus(project).label }}
+              </span>
+
+              <span
+                v-if="project.estado === 'aprobado' && !project.publicado"
+                class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-stone-100 text-stone-600 border border-stone-200 text-[11px] font-semibold"
+              >
+                <EyeOff class="w-3 h-3" />
+                <span>Oculto en catálogo</span>
+              </span>
+            </div>
           </div>
 
           <p class="text-sm text-stone-600 mt-5">
-            {{ statusDetails[project.estado]?.message || 'El estado del proyecto fue actualizado.' }}
+            {{ getVisibleStatus(project).message }}
           </p>
+
           <p v-if="project.estado === 'rechazado' && project.motivo_rechazo" class="mt-3 p-3 rounded-xl bg-rose-50 border border-rose-100 text-sm text-rose-800">
             <strong>Motivo:</strong> {{ project.motivo_rechazo }}
           </p>
-          <div class="flex items-center gap-2 mt-5 pt-4 border-t border-stone-100 text-xs text-stone-500">
-            <CalendarDays class="w-4 h-4" />
-            <span>Inscrito el {{ formatDate(project.created_at) }}</span>
+
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-5 pt-4 border-t border-stone-100 text-xs text-stone-500">
+            <span class="inline-flex items-center gap-1.5">
+              <CalendarDays class="w-4 h-4" />
+              Inscrito el {{ formatDate(project.created_at) }}
+            </span>
             <span v-if="project.updated_at">· Actualizado el {{ formatDate(project.updated_at) }}</span>
+            <span v-if="project.publicado && project.fecha_publicacion" class="text-emerald-700 font-medium">
+              · Publicado el {{ formatDate(project.fecha_publicacion) }}
+            </span>
           </div>
         </div>
       </article>
