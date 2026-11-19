@@ -10,6 +10,8 @@ import type {
   EvaluacionEtapa,
   EvaluacionInicialItem,
   RegistrarEvaluacionInicialPayload,
+  EvaluacionTecnicaItem,
+  RegistrarEvaluacionTecnicaPayload,
   Donacion,
   CreatePostulantePayload,
   PostulacionRegistroResponse,
@@ -122,22 +124,24 @@ export const api = {
 
   async proposeProject(payload: ProposeProjectPayload): Promise<{ message?: string; proyecto: Proyecto }> {
     const res = await apiClient.post('/proyectos', payload);
+    return res.data;
+  },
+
+  // KIR-23 (KIR-75): Consultar seguimiento de proyectos inscritos por organización
   async trackProjectProposals(busqueda: string): Promise<Array<{
     id: number | string;
     titulo: string;
     ubicacion: string;
+    cupos_disponibles?: number;
     estado: 'pendiente_revision' | 'aprobado' | 'rechazado';
+    publicado?: boolean;
+    fecha_publicacion?: string | null;
     motivo_rechazo?: string | null;
     created_at?: string;
     updated_at?: string;
     organizacion_nombre: string;
   }>> {
     const res = await apiClient.get('/proyectos/tracking', { params: { busqueda } });
-    return res.data;
-  },
-
-  async proposeProject(payload: ProposeProjectPayload): Promise<Proyecto> {
-    const res = await apiClient.post<Proyecto>('/proyectos', payload);
     return res.data;
   },
 
@@ -273,6 +277,37 @@ export const api = {
     payload: RegistrarEvaluacionInicialPayload
   ): Promise<any> {
     const res = await apiClient.post(`/evaluaciones/inicial/${postulacionId}`, payload);
+    return res.data;
+  },
+
+  // KIR-25: Gestión de Evaluación Técnica - Socio Territorial (KIR-67)
+  async getTechnicalEvaluations(params?: {
+    estado?: string;
+    proyecto_id?: number | string;
+    q?: string;
+  }): Promise<EvaluacionTecnicaItem[]> {
+    const res = await apiClient.get<EvaluacionTecnicaItem[]>('/evaluaciones/tecnica', { params });
+    return res.data;
+  },
+
+  async getTechnicalEvaluationsMetrics(): Promise<{
+    total: number;
+    disponibles: number;
+    bloqueadas: number;
+    pendientes: number;
+    aprobados: number;
+    observados: number;
+    rechazados: number;
+  }> {
+    const res = await apiClient.get('/evaluaciones/tecnica/metricas');
+    return res.data;
+  },
+
+  async submitTechnicalEvaluation(
+    postulacionId: number | string,
+    payload: RegistrarEvaluacionTecnicaPayload
+  ): Promise<any> {
+    const res = await apiClient.post(`/evaluaciones/tecnica/${postulacionId}`, payload);
     return res.data;
   },
 

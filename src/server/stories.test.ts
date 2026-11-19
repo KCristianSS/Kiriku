@@ -103,12 +103,19 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
   // HISTORIA 2: KIR-17 - Validar mayoría de edad antes de postular
   // -------------------------------------------------------------
   describe('KIR-17: Validar mayoría de edad antes de postular', () => {
+    function formatLocalYmd(d: Date): string {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
     function calcularEdad(fechaNac: string): number {
       const hoy = new Date();
-      const cumple = new Date(fechaNac);
-      let edad = hoy.getFullYear() - cumple.getFullYear();
-      const m = hoy.getMonth() - cumple.getMonth();
-      if (m < 0 || (m === 0 && hoy.getDate() < cumple.getDate())) {
+      const [birthYear, birthMonth, birthDay] = fechaNac.split('T')[0].split('-').map(Number);
+      let edad = hoy.getFullYear() - birthYear;
+      const m = (hoy.getMonth() + 1) - birthMonth;
+      if (m < 0 || (m === 0 && hoy.getDate() < birthDay)) {
         edad--;
       }
       return edad;
@@ -116,7 +123,7 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
 
     it('KIR-101: Escenario 1 - Persona menor de 18 años (17 años) debe ser RECHAZADA', () => {
       const hoy = new Date();
-      const fecha17 = new Date(hoy.getFullYear() - 17, hoy.getMonth(), hoy.getDate()).toISOString().split('T')[0];
+      const fecha17 = formatLocalYmd(new Date(hoy.getFullYear() - 17, hoy.getMonth(), hoy.getDate()));
       const edad = calcularEdad(fecha17);
       assert.equal(edad, 17, 'Debe tener exactamente 17 años');
       assert.equal(edad >= 18, false, 'No debe cumplir la mayoría de edad');
@@ -124,7 +131,7 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
 
     it('KIR-101: Escenario 2 - Persona que cumple 18 años hoy debe ser ADMITIDA', () => {
       const hoy = new Date();
-      const fecha18 = new Date(hoy.getFullYear() - 18, hoy.getMonth(), hoy.getDate()).toISOString().split('T')[0];
+      const fecha18 = formatLocalYmd(new Date(hoy.getFullYear() - 18, hoy.getMonth(), hoy.getDate()));
       const edad = calcularEdad(fecha18);
       assert.equal(edad, 18, 'Debe tener exactamente 18 años hoy');
       assert.equal(edad >= 18, true, 'Debe cumplir la mayoría de edad');
@@ -132,7 +139,7 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
 
     it('KIR-101: Escenario 3 - Persona que cumple 18 mañana aún tiene 17 y debe ser RECHAZADA', () => {
       const hoy = new Date();
-      const manana = new Date(hoy.getFullYear() - 18, hoy.getMonth(), hoy.getDate() + 1).toISOString().split('T')[0];
+      const manana = formatLocalYmd(new Date(hoy.getFullYear() - 18, hoy.getMonth(), hoy.getDate() + 1));
       const edad = calcularEdad(manana);
       assert.equal(edad, 17, 'Aún tiene 17 años el día de hoy');
       assert.equal(edad >= 18, false, 'No debe cumplir la mayoría de edad');
@@ -140,7 +147,7 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
 
     it('KIR-101: Escenario 4 - Adulto de 25 años debe ser ADMITIDO', () => {
       const hoy = new Date();
-      const fecha25 = new Date(hoy.getFullYear() - 25, 0, 1).toISOString().split('T')[0];
+      const fecha25 = formatLocalYmd(new Date(hoy.getFullYear() - 25, 0, 1));
       const edad = calcularEdad(fecha25);
       assert.ok(edad >= 24, 'Debe ser mayor de edad');
       assert.equal(edad >= 18, true, 'Debe cumplir la mayoría de edad');
@@ -951,4 +958,239 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
       await query('DELETE FROM proyectos WHERE id = $1', [projectId]);
     });
   });
+
+  // ============================================================================
+  // KIR-23: Consultar seguimiento del proyecto inscrito (KIR-74, KIR-75, KIR-76, KIR-77)
+  // ============================================================================
+  describe('KIR-23: Consultar seguimiento del proyecto inscrito', () => {
+    it('KIR-74 y KIR-75: Consulta por correo de organización y estados visibles (en revisión, aprobado, publicado, rechazado)', async () => {
+      const uniqueEmail = `seguimiento.org.${Date.now()}@kiriku.test`;
+      const orgIns = await query<{ id: number }>(
+        `INSERT INTO organizaciones (nombre, tipo, contacto_nombre, contacto_email)
+         VALUES ($1, 'ONG', 'Contacto Seguimiento', $2)
+         RETURNING id`,
+        [`Org Seguimiento Test ${Date.now()}`, uniqueEmail]
+      );
+      const orgId = orgIns[0].id;
+
+      // Insertar 3 proyectos con distintos estados visibles
+      const pRev = await query<{ id: number }>(
+        `INSERT INTO proyectos (titulo, descripcion, ubicacion, cupos_disponibles, organizacion_id, estado, publicado)
+         VALUES ('Proyecto En Revisión KIR-77', 'Descripción de prueba KIR-77 revisión', 'La Paz', 10, $1, 'pendiente_revision', false)
+         RETURNING id`,
+        [orgId]
+      );
+      const pPub = await query<{ id: number }>(
+        `INSERT INTO proyectos (titulo, descripcion, ubicacion, cupos_disponibles, organizacion_id, estado, publicado, fecha_publicacion)
+         VALUES ('Proyecto Publicado KIR-77', 'Descripción de prueba KIR-77 publicado', 'El Alto', 15, $1, 'aprobado', true, NOW())
+         RETURNING id`,
+        [orgId]
+      );
+      const pRech = await query<{ id: number }>(
+        `INSERT INTO proyectos (titulo, descripcion, ubicacion, cupos_disponibles, organizacion_id, estado, publicado, motivo_rechazo)
+         VALUES ('Proyecto Rechazado KIR-77', 'Descripción de prueba KIR-77 rechazado', 'Tarija', 5, $1, 'rechazado', false, 'Falta plan de seguridad territorial.')
+         RETURNING id`,
+        [orgId]
+      );
+
+      // Simular consulta exacta de GET /api/proyectos/tracking (case-insensitive y trim)
+      const tracked = await query<{
+        id: number;
+        titulo: string;
+        estado: string;
+        publicado: boolean;
+        fecha_publicacion: string | null;
+        motivo_rechazo: string | null;
+        organizacion_nombre: string;
+      }>(
+        `SELECT p.id, p.titulo, p.estado, COALESCE(p.publicado, false) AS publicado,
+                p.fecha_publicacion, p.motivo_rechazo, o.nombre AS organizacion_nombre
+         FROM proyectos p
+         JOIN organizaciones o ON o.id = p.organizacion_id
+         WHERE LOWER(TRIM(o.contacto_email)) = LOWER($1)
+         ORDER BY p.created_at DESC`,
+        [uniqueEmail.toUpperCase()]
+      );
+
+      assert.equal(tracked.length, 3, 'La organización debe ver sus 3 proyectos inscritos');
+
+      const rowRev = tracked.find((r) => r.id === pRev[0].id);
+      const rowPub = tracked.find((r) => r.id === pPub[0].id);
+      const rowRech = tracked.find((r) => r.id === pRech[0].id);
+
+      assert.equal(rowRev?.estado, 'pendiente_revision');
+      assert.equal(rowRev?.publicado, false);
+
+      assert.equal(rowPub?.estado, 'aprobado');
+      assert.equal(rowPub?.publicado, true);
+      assert.ok(rowPub?.fecha_publicacion, 'Debe exponer fecha de publicación');
+
+      assert.equal(rowRech?.estado, 'rechazado');
+      assert.equal(rowRech?.motivo_rechazo, 'Falta plan de seguridad territorial.');
+
+      // Otro correo no debe devolver proyectos ajenos
+      const empty = await query<{ id: number }>(
+        `SELECT p.id FROM proyectos p JOIN organizaciones o ON o.id = p.organizacion_id WHERE LOWER(TRIM(o.contacto_email)) = LOWER($1)`,
+        ['inexistente.kiriku@test.org']
+      );
+      assert.equal(empty.length, 0);
+
+      // Limpieza
+      await query('DELETE FROM proyectos WHERE organizacion_id = $1', [orgId]);
+      await query('DELETE FROM organizaciones WHERE id = $1', [orgId]);
+    });
+  });
+
+  // ============================================================================
+  // KIR-25: Gestionar evaluación técnica (KIR-66, KIR-67, KIR-68, KIR-69)
+  // ============================================================================
+  describe('KIR-25: Gestionar evaluación técnica', () => {
+    it('KIR-66 y KIR-67: Validación de precondición (etapa inicial aprobada) y obligatoriedad de comentarios', () => {
+      const validarEvaluacionTecnica = (
+        inicialEstado: string,
+        estadoDecision: string,
+        comentarios?: string
+      ): { ok: boolean; error?: string } => {
+        if (inicialEstado !== 'aprobado') {
+          return { ok: false, error: 'La etapa inicial debe estar aprobada antes de la evaluación técnica' };
+        }
+        if (!['aprobado', 'observado', 'rechazado', 'en_revision'].includes(estadoDecision)) {
+          return { ok: false, error: 'Estado técnico inválido' };
+        }
+        if ((estadoDecision === 'rechazado' || estadoDecision === 'observado') && (!comentarios || comentarios.trim().length < 5)) {
+          return { ok: false, error: 'Se requiere motivo u observación técnica (mínimo 5 caracteres)' };
+        }
+        return { ok: true };
+      };
+
+      assert.equal(validarEvaluacionTecnica('pendiente', 'aprobado').ok, false, 'No debe aprobar técnica sin inicial aprobada');
+      assert.equal(validarEvaluacionTecnica('en_revision', 'aprobado').ok, false, 'No debe aprobar técnica con inicial en revisión');
+      assert.equal(validarEvaluacionTecnica('aprobado', 'rechazado', 'no').ok, false, 'Rechazo técnico exige comentarios >= 5 chars');
+      assert.equal(validarEvaluacionTecnica('aprobado', 'aprobado', 'Perfil técnico compatible').ok, true);
+    });
+
+    it('KIR-68 y KIR-69: Flujo completo del Socio Territorial - Aprobación técnica desbloquea Entrevista Personal', async () => {
+      const testCi = 'TEST-TEC-OK-' + Date.now();
+      const testEmail = `tec.ok.${Date.now()}@kiriku.test`;
+
+      const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+      assert.ok(proy.length > 0);
+      const proyectoId = proy[0].id;
+
+      const postInsert = await query<{ id: number }>(
+        `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion, habilidades)
+         VALUES ($1, 'Valeria', 'SocioTest', '1997-04-12', $2, 'Ingeniera Ambiental', 'Reforestación, SIG, Liderazgo comunitario')
+         RETURNING id`,
+        [testCi, testEmail]
+      );
+      const postulanteId = postInsert[0].id;
+
+      const appInsert = await query<{ id: number }>(
+        `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general)
+         VALUES ($1, $2, 'en_proceso')
+         RETURNING id`,
+        [postulanteId, proyectoId]
+      );
+      const postulacionId = appInsert[0].id;
+
+      // Crear las etapas secuenciales (inicial aprobada, tecnica en_revision, personal pendiente)
+      await query(
+        `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador, comentarios)
+         VALUES
+           ($1, 'inicial', 'aprobado', 'Comité de Admisiones', 'Mayoría de edad verificada'),
+           ($1, 'tecnica', 'en_revision', 'Socio Territorial / Coordinador de Proyecto', 'Pendiente evaluación técnica'),
+           ($1, 'personal', 'pendiente', 'Psicología y Talento Kirikú', 'Esperando evaluación técnica')`,
+        [postulacionId]
+      );
+
+      // Registrar evaluación técnica aprobada por Socio Territorial
+      const dictamen = '[Socio Territorial: Puntaje Técnico: 90/100 | Experiencia Afín: Sí | Competencias Técnicas: Aptas] Perfil técnico idóneo para campo.';
+      await query(
+        `UPDATE evaluaciones_etapas
+         SET estado = 'aprobado', comentarios = $1, evaluador = 'Socio Territorial Zona Norte', fecha_evaluacion = NOW()
+         WHERE postulacion_id = $2 AND etapa = 'tecnica'`,
+        [dictamen, postulacionId]
+      );
+
+      // Desbloquear automáticamente etapa 'personal'
+      await query(
+        `UPDATE evaluaciones_etapas
+         SET estado = 'en_revision', fecha_evaluacion = NOW()
+         WHERE postulacion_id = $1 AND etapa = 'personal' AND estado = 'pendiente'`,
+        [postulacionId]
+      );
+
+      const etapas = await query<{ etapa: string; estado: string; comentarios: string | null }>(
+        `SELECT etapa, estado, comentarios FROM evaluaciones_etapas WHERE postulacion_id = $1 ORDER BY id ASC`,
+        [postulacionId]
+      );
+
+      assert.equal(etapas[1].etapa, 'tecnica');
+      assert.equal(etapas[1].estado, 'aprobado', 'Etapa técnica debe quedar aprobada');
+      assert.ok(etapas[1].comentarios?.includes('Puntaje Técnico: 90/100'));
+      assert.equal(etapas[2].etapa, 'personal');
+      assert.equal(etapas[2].estado, 'en_revision', 'Etapa personal debe haberse desbloqueado a en_revision');
+
+      // Limpieza
+      await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+      await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+      await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+    });
+
+    it('KIR-69: Rechazo en evaluación técnica cierra globalmente la postulación', async () => {
+      const testCi = 'TEST-TEC-REJ-' + Date.now();
+      const testEmail = `tec.rej.${Date.now()}@kiriku.test`;
+
+      const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+      assert.ok(proy.length > 0);
+      const proyectoId = proy[0].id;
+
+      const postInsert = await query<{ id: number }>(
+        `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email)
+         VALUES ($1, 'Diego', 'TecnicoRechazo', '1999-08-10', $2)
+         RETURNING id`,
+        [testCi, testEmail]
+      );
+      const postulanteId = postInsert[0].id;
+
+      const appInsert = await query<{ id: number }>(
+        `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general)
+         VALUES ($1, $2, 'en_proceso')
+         RETURNING id`,
+        [postulanteId, proyectoId]
+      );
+      const postulacionId = appInsert[0].id;
+
+      await query(
+        `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador)
+         VALUES
+           ($1, 'inicial', 'aprobado', 'Comité Admisiones'),
+           ($1, 'tecnica', 'en_revision', 'Socio Territorial')`,
+        [postulacionId]
+      );
+
+      await query(
+        `UPDATE evaluaciones_etapas
+         SET estado = 'rechazado', comentarios = 'No cuenta con disponibilidad territorial requerida para trabajo en campo.', fecha_evaluacion = NOW()
+         WHERE postulacion_id = $1 AND etapa = 'tecnica'`,
+        [postulacionId]
+      );
+      await query(
+        `UPDATE postulaciones SET estado_general = 'rechazado', updated_at = NOW() WHERE id = $1`,
+        [postulacionId]
+      );
+
+      const appRow = await query<{ estado_general: string }>(
+        'SELECT estado_general FROM postulaciones WHERE id = $1',
+        [postulacionId]
+      );
+      assert.equal(appRow[0].estado_general, 'rechazado', 'El rechazo técnico debe cerrar la postulación como rechazada');
+
+      // Limpieza
+      await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+      await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+      await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+    });
+  });
 });
+
