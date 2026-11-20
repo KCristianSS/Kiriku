@@ -4,6 +4,16 @@ import { authenticate, requirePermission } from './authorization';
 
 const router: Router = express.Router();
 
+// Healthcheck endpoint (Docker Desktop / uptime monitoring)
+router.get('/health', async (_req: Request, res: Response) => {
+  try {
+    await query('SELECT 1');
+    res.json({ status: 'ok', database: 'connected', timestamp: new Date().toISOString() });
+  } catch (err: any) {
+    res.status(503).json({ status: 'error', database: 'disconnected', error: err?.message });
+  }
+});
+
 // Helper to calculate age from birth date
 function calculateAge(birthDateString: string | Date): number {
   const today = new Date();
