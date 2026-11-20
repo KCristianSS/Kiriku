@@ -1,0 +1,15 @@
+services:
+  kiriku-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kiriku-voluntariado
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      TZ: America/La_Paz
+    restart: unless-stopped
