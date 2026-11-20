@@ -9,7 +9,7 @@ if (!process.env.DATABASE_URL && fs.existsSync('.env.example')) {
   dotenv.config({ path: '.env.example' });
 }
 
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres.zijlhvezhtgzdgojstbk:ucb_sistemas2026@aws-0-us-west-2.pooler.supabase.com:5432/postgres';
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:ucb_sistemas2026@db.zijlhvezhtgzdgojstbk.supabase.co:5432/postgres';
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://zijlhvezhtgzdgojstbk.supabase.co';
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
