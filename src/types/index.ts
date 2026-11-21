@@ -182,6 +182,51 @@ export interface RegistrarEvaluacionTecnicaPayload {
   criterios?: EvaluacionTecnicaCriterios;
 }
 
+// KIR-54: Estructura de evaluación de salud física y psicológica (Etapa 5)
+export interface EvaluacionSaludCriterios {
+  apto_fisico?: boolean;
+  apto_psicologico?: boolean;
+  examen_medico_vigente?: boolean;
+  condicion_especifica_atendida?: boolean;
+}
+
+export interface EvaluacionSaludItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  postulacion_fecha: string;
+  postulacion_estado: PostulacionEstado;
+  inicial_estado: EtapaEstado | string;
+  tecnica_estado: EtapaEstado | string;
+  personal_estado: EtapaEstado | string;
+  competencias_estado: EtapaEstado | string;
+  puede_evaluar: boolean;
+  postulante: Postulante & {
+    edad: number;
+    es_mayor_edad: boolean;
+  };
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    cupos_disponibles?: number;
+    organizacion_id?: number | string | null;
+    organizacion_nombre?: string | null;
+  };
+}
+
+export interface RegistrarEvaluacionSaludPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado' | 'en_revision';
+  evaluador: string;
+  comentarios: string;
+  puntaje_bienestar?: number;
+  nivel_riesgo?: 'bajo' | 'moderado' | 'alto';
+  criterios?: EvaluacionSaludCriterios;
+}
+
 
 export interface Postulacion {
   id: number | string;
@@ -195,6 +240,76 @@ export interface Postulacion {
   postulante?: Postulante;
   proyecto?: Proyecto;
   etapas?: EvaluacionEtapa[];
+}
+
+// KIR-50: Definición de estados y avance visible del proceso de postulación
+export type ProcesoEstadoVisibleCodigo =
+  | 'en_proceso'
+  | 'observado'
+  | 'aprobado'
+  | 'rechazado'
+  | 'reasignacion';
+
+export type ProcesoSeveridad = 'info' | 'success' | 'warning' | 'danger';
+
+export interface ProcesoEstadoVisible {
+  codigo: ProcesoEstadoVisibleCodigo;
+  etiqueta: string;
+  descripcion: string;
+  severidad: ProcesoSeveridad;
+}
+
+export interface AvanceEtapaActual {
+  codigo: EtapaNombre;
+  nombre: string;
+  orden: number;
+  estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+}
+
+export interface AvanceProcesoVisible {
+  porcentaje: number;
+  etapas_totales: number;
+  etapas_aprobadas: number;
+  etapas_en_revision: number;
+  etapas_observadas: number;
+  etapas_rechazadas: number;
+  etapas_pendientes: number;
+  estado_visible: ProcesoEstadoVisible;
+  etapa_actual: AvanceEtapaActual | null;
+  siguiente_paso: string;
+  requiere_atencion: boolean;
+  ultima_actualizacion: string | null;
+}
+
+export interface EvaluacionEtapaTracking extends EvaluacionEtapa {
+  orden?: number;
+  titulo_etapa?: string;
+  descripcion_etapa?: string;
+}
+
+export interface PostulacionTrackingItem {
+  postulante: Postulante;
+  postulacion: {
+    id: number | string;
+    codigo_seguimiento?: string;
+    estado_general: string;
+    es_reasignacion: boolean;
+    es_reenganche?: boolean;
+    created_at: string;
+    updated_at: string;
+    proyecto: {
+      id: number | string;
+      titulo: string;
+      ubicacion: string;
+      portada_url?: string;
+      organizacion_nombre?: string;
+    };
+    etapas: EvaluacionEtapaTracking[];
+  };
+  avance: AvanceProcesoVisible;
 }
 
 export type DonacionTipo = 'economica' | 'especie';
