@@ -219,6 +219,42 @@ export interface RegistrarEvaluacionCompetenciasPayload {
   criterios: EvaluacionCompetenciasCriterios;
 }
 
+// KIR-62: Criterios estructurados para la entrevista personal.
+export interface EvaluacionPersonalCriterios {
+  motivacion_servicio: number;
+  compromiso_responsabilidad: number;
+  comunicacion_interpersonal: number;
+  disponibilidad: number;
+  madurez_autocuidado: number;
+}
+
+export interface EvaluacionPersonalItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  detalle_criterios_personales: EvaluacionPersonalCriterios;
+  puntaje_promedio: number | null;
+  tecnica_estado: EtapaEstado | string;
+  puede_evaluar: boolean;
+  postulante: Postulante;
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    organizacion_nombre?: string | null;
+  };
+}
+
+export interface RegistrarEvaluacionPersonalPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado';
+  evaluador: string;
+  comentarios: string;
+  criterios: EvaluacionPersonalCriterios;
+}
+
 
 export interface Postulacion {
   id: number | string;

@@ -13,6 +13,8 @@ import type {
   EvaluacionTecnicaItem,
   EvaluacionCompetenciasItem,
   RegistrarEvaluacionCompetenciasPayload,
+  EvaluacionPersonalItem,
+  RegistrarEvaluacionPersonalPayload,
   RegistrarEvaluacionTecnicaPayload,
   Donacion,
   CreatePostulantePayload,
@@ -328,6 +330,24 @@ export const api = {
     payload: RegistrarEvaluacionCompetenciasPayload
   ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
     const res = await apiClient.post(`/evaluaciones/competencias/${postulacionId}`, payload);
+    return res.data;
+  },
+
+  // KIR-63: Gestión de la entrevista personal.
+  async getPersonalEvaluations(params?: {
+    estado?: string;
+    proyecto_id?: number | string;
+    q?: string;
+  }): Promise<EvaluacionPersonalItem[]> {
+    const res = await apiClient.get<EvaluacionPersonalItem[]>('/evaluaciones/personal', { params });
+    return res.data;
+  },
+
+  async submitPersonalEvaluation(
+    postulacionId: number | string,
+    payload: RegistrarEvaluacionPersonalPayload
+  ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
+    const res = await apiClient.post(`/evaluaciones/personal/${postulacionId}`, payload);
     return res.data;
   },
 

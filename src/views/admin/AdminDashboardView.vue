@@ -23,6 +23,7 @@ import {
   Globe,
   Wrench,
   Brain,
+  MessageCircle,
 } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -225,6 +226,26 @@ onMounted(() => {
           </div>
         </div>
         <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#F58F38] group-hover:translate-x-1 transition-all shrink-0" />
+      </router-link>
+
+      <router-link
+        to="/admin/evaluacion-personal"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-sky-600 p-5 shadow-xs transition-all flex items-center justify-between group"
+      >
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-sky-50 text-sky-700 rounded-xl flex items-center justify-center shrink-0">
+            <MessageCircle class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-sky-700 transition-colors">
+              Evaluación Personal
+            </h3>
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Registrar entrevistas, motivación y compromiso social (KIR-26).
+            </p>
+          </div>
+        </div>
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-sky-600 group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
 
       <router-link
