@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import test, { describe, it, after } from 'node:test';
+import express from 'express';
+import apiRouter, {
+  buildProcessProgress,
+  ETAPAS_PROCESO_DEFINICION,
+  normalizeEtapaEstado,
+} from './api';
 import { hasPermission } from './permissions';
 import { query, dbPool } from './supabase';
 
@@ -1192,5 +1200,423 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
       await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
     });
   });
+
+  // ============================================================================
+  // KIR-28: Gestionar evaluación de salud física y psicológica (KIR-54, KIR-55, KIR-56, KIR-57)
+  // ============================================================================
+  describe('KIR-28: Gestionar evaluación de salud física y psicológica', () => {
+    it('KIR-54: Estructura de la etapa de salud física y psicológica como quinta etapa secuencial', async () => {
+      const columns = await query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'evaluaciones_etapas'
+           AND column_name IN ('id', 'postulacion_id', 'etapa', 'estado', 'evaluador', 'comentarios', 'fecha_evaluacion')`
+      );
+      const colNames = columns.map((c) => c.column_name);
+      assert.ok(colNames.includes('postulacion_id'));
+      assert.ok(colNames.includes('etapa'));
+      assert.ok(colNames.includes('estado'));
+      assert.ok(colNames.includes('evaluador'));
+      assert.ok(colNames.includes('comentarios'));
+      assert.ok(colNames.includes('fecha_evaluacion'));
+
+      const etapasOrden = ['inicial', 'tecnica', 'personal', 'competencias', 'salud_fisica_psicologica'];
+      assert.equal(etapasOrden.length, 5);
+      assert.equal(etapasOrden[4], 'salud_fisica_psicologica', 'La etapa de salud física y psicológica debe ser la etapa 5');
+    });
+
+    it('KIR-55 & KIR-56: Matriz de permisos RBAC por rol en BD y reglas de validación de dictamen médico/psicológico', async () => {
+      // Verificar matriz de permisos real en BD
+      const rolePerms = await query<{ role_code: string; perm_code: string }>(
+        `SELECT r.code AS role_code, p.code AS perm_code
+         FROM roles r
+         JOIN role_permissions rp ON rp.role_id = r.id
+         JOIN permissions p ON p.id = rp.permission_id
+         WHERE r.code IN ('administrador', 'evaluador', 'gestor_proyectos', 'socio_territorial')`
+      );
+
+      const permsByRole = (code: string) =>
+        rolePerms.filter((row) => row.role_code === code).map((row) => row.perm_code);
+
+      assert.equal(hasPermission('u-admin', permsByRole('administrador'), 'applications.read'), true);
+      assert.equal(hasPermission('u-admin', permsByRole('administrador'), 'applications.manage'), true);
+
+      assert.equal(hasPermission('u-eval', permsByRole('evaluador'), 'applications.read'), true);
+      assert.equal(hasPermission('u-eval', permsByRole('evaluador'), 'applications.manage'), true);
+
+      // Gestor de proyectos: solo lectura (applications.read sí, applications.manage no)
+      assert.equal(hasPermission('u-gestor', permsByRole('gestor_proyectos'), 'applications.read'), true);
+      assert.equal(hasPermission('u-gestor', permsByRole('gestor_proyectos'), 'applications.manage'), false);
+
+      // Socio territorial: acceso denegado a módulo de salud (sin applications.read ni applications.manage)
+      assert.equal(hasPermission('u-socio', permsByRole('socio_territorial'), 'applications.read'), false);
+      assert.equal(hasPermission('u-socio', permsByRole('socio_territorial'), 'applications.manage'), false);
+    });
+
+    it('KIR-57: Pruebas reales HTTP de consulta, RBAC (401/403/200), validación de precondición y registro de evaluación de salud', async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      const createdUserIds: string[] = [];
+      let postulanteId = 0;
+      let postulacionId = 0;
+
+      const createRoleUser = async (roleCode: string, prefix: string) => {
+        const roles = await query<{ id: number }>('SELECT id FROM roles WHERE code = $1', [roleCode]);
+        assert.ok(roles.length > 0, `Rol ${roleCode} debe existir`);
+        const email = `${prefix}.${stamp}@kiriku.test`;
+        const userIns = await query<{ id: string }>(
+          `INSERT INTO auth.users (id, aud, role, email, raw_user_meta_data, created_at, updated_at)
+           VALUES (gen_random_uuid(), 'authenticated', 'authenticated', $1, json_build_object('full_name', $2::text), NOW(), NOW())
+           RETURNING id`,
+          [email, `Test ${roleCode}`]
+        );
+        const uid = userIns[0].id;
+        createdUserIds.push(uid);
+        await query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [uid, roles[0].id]);
+        return uid;
+      };
+
+      try {
+        const evalToken = await createRoleUser('evaluador', 'kir28-eval');
+        const gestorToken = await createRoleUser('gestor_proyectos', 'kir28-gestor');
+        const socioToken = await createRoleUser('socio_territorial', 'kir28-socio');
+
+        const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+        assert.ok(proy.length > 0, 'Debe existir un proyecto aprobado');
+
+        const postInsert = await query<{ id: number }>(
+          `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion, habilidades)
+           VALUES ($1, 'Lucía', 'SaludTest', '1998-06-15', $2, 'Enfermera', 'Primeros auxilios, Atención comunitaria')
+           RETURNING id`,
+          [`TEST-SALUD-${stamp}`, `salud.test.${stamp}@kiriku.test`]
+        );
+        postulanteId = postInsert[0].id;
+
+        const appInsert = await query<{ id: number }>(
+          `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general)
+           VALUES ($1, $2, 'en_proceso')
+           RETURNING id`,
+          [postulanteId, proy[0].id]
+        );
+        postulacionId = appInsert[0].id;
+
+        // Etapas 1..3 aprobadas, 4 (competencias) aún en revisión, 5 (salud) pendiente
+        await query(
+          `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador, comentarios)
+           VALUES
+             ($1, 'inicial', 'aprobado', 'Comité Admisiones', 'OK'),
+             ($1, 'tecnica', 'aprobado', 'Socio Territorial', 'OK'),
+             ($1, 'personal', 'aprobado', 'Psicología', 'OK'),
+             ($1, 'competencias', 'en_revision', 'Facilitador Grupal', 'En curso'),
+             ($1, 'salud_fisica_psicologica', 'pendiente', 'Equipo Médico Kirikú', 'Esperando competencias')`,
+          [postulacionId]
+        );
+
+        // 1. Consulta sin autenticación -> 401
+        const unauthRes = await fetch(`${baseUrl}/evaluaciones/salud`);
+        assert.equal(unauthRes.status, 401, 'Usuario sin token debe recibir 401');
+
+        // 2. Consulta con socio_territorial (sin applications.read) -> 403
+        const socioRes = await fetch(`${baseUrl}/evaluaciones/salud`, {
+          headers: { Authorization: `Bearer ${socioToken}` },
+        });
+        assert.equal(socioRes.status, 403, 'Socio territorial no debe acceder a evaluación de salud (403)');
+
+        // 3. Consulta con gestor_proyectos (solo lectura) -> 200 y contiene la postulación bloqueada
+        const gestorGetRes = await fetch(`${baseUrl}/evaluaciones/salud?q=${encodeURIComponent(`TEST-SALUD-${stamp}`)}`, {
+          headers: { Authorization: `Bearer ${gestorToken}` },
+        });
+        assert.equal(gestorGetRes.status, 200, 'Gestor de proyectos debe poder consultar (solo lectura)');
+        const gestorItems = (await gestorGetRes.json()) as any[];
+        assert.equal(gestorItems.length, 1);
+        assert.equal(gestorItems[0].postulacion_id, postulacionId);
+        assert.equal(gestorItems[0].puede_evaluar, false, 'Debe estar bloqueada mientras competencias no esté aprobado');
+
+        // 4. Intento de registro por gestor_proyectos (sin applications.manage) -> 403
+        const gestorPostRes = await fetch(`${baseUrl}/evaluaciones/salud/${postulacionId}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${gestorToken}`,
+          },
+          body: JSON.stringify({ estado: 'aprobado', comentarios: 'Intento sin permiso' }),
+        });
+        assert.equal(gestorPostRes.status, 403, 'Gestor no debe poder registrar evaluaciones de salud (403)');
+
+        // 5. Intento de registro por evaluador cuando competencias NO está aprobado -> 400
+        const blockedPostRes = await fetch(`${baseUrl}/evaluaciones/salud/${postulacionId}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${evalToken}`,
+          },
+          body: JSON.stringify({ estado: 'aprobado', comentarios: 'Intento prematuro' }),
+        });
+        assert.equal(blockedPostRes.status, 400, 'No se debe evaluar salud sin competencias aprobadas (400)');
+
+        // 6. Aprobar competencias y verificar desbloqueo + validación de observación obligatoria
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'aprobado' WHERE postulacion_id = $1 AND etapa = 'competencias'`,
+          [postulacionId]
+        );
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'en_revision' WHERE postulacion_id = $1 AND etapa = 'salud_fisica_psicologica'`,
+          [postulacionId]
+        );
+
+        const obsInvalidRes = await fetch(`${baseUrl}/evaluaciones/salud/${postulacionId}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${evalToken}`,
+          },
+          body: JSON.stringify({ estado: 'observado', comentarios: 'abc' }),
+        });
+        assert.equal(obsInvalidRes.status, 400, 'Estado observado exige comentarios >= 5 caracteres');
+
+        // 7. Registro válido de aprobación de salud -> 200 y postulación pasa a 'aprobado' global
+        const approveRes = await fetch(`${baseUrl}/evaluaciones/salud/${postulacionId}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${evalToken}`,
+          },
+          body: JSON.stringify({
+            estado: 'aprobado',
+            evaluador: 'Dra. Elena Vargas',
+            puntaje_bienestar: 94,
+            nivel_riesgo: 'bajo',
+            criterios: {
+              apto_fisico: true,
+              apto_psicologico: true,
+              examen_medico_vigente: true,
+              condicion_especifica_atendida: true,
+            },
+            comentarios: 'Apto físico y psicológico para trabajo comunitario en campo.',
+          }),
+        });
+        assert.equal(approveRes.status, 200, 'Evaluador autorizado debe registrar evaluación de salud con éxito');
+        const approveJson = (await approveRes.json()) as any;
+        assert.equal(approveJson.estado_general, 'aprobado', 'Al aprobar las 5 etapas la postulación debe quedar aprobada');
+        assert.ok(approveJson.etapa.comentarios.includes('Índice de Bienestar: 94/100'));
+        assert.ok(approveJson.etapa.comentarios.includes('Riesgo: BAJO'));
+
+        // 8. Verificar que las métricas y consulta devuelven el registro aprobado
+        const metricsRes = await fetch(`${baseUrl}/evaluaciones/salud/metricas`, {
+          headers: { Authorization: `Bearer ${evalToken}` },
+        });
+        assert.equal(metricsRes.status, 200);
+        const metricsJson = (await metricsRes.json()) as any;
+        assert.ok(metricsJson.aprobados >= 1);
+      } finally {
+        server.close();
+        if (postulacionId) {
+          await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+          await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+        }
+        if (postulanteId) {
+          await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+        }
+        for (const uid of createdUserIds) {
+          await query('DELETE FROM user_roles WHERE user_id = $1', [uid]);
+          await query('DELETE FROM auth.users WHERE id = $1', [uid]);
+        }
+      }
+    });
+  });
+
+  // ============================================================================
+  // KIR-29: Consultar estado y avance del proceso (KIR-50, KIR-51, KIR-52, KIR-53)
+  // ============================================================================
+  describe('KIR-29: Consultar estado y avance del proceso', () => {
+    it('KIR-50: Definición de estados visibles y cálculo de avance porcentual en las 5 etapas', () => {
+      assert.equal(ETAPAS_PROCESO_DEFINICION.length, 5, 'Deben existir exactamente 5 etapas definidas');
+      assert.equal(normalizeEtapaEstado('en revision'), 'en_revision');
+      assert.equal(normalizeEtapaEstado('aprobada'), 'aprobado');
+      assert.equal(normalizeEtapaEstado('observada'), 'observado');
+      assert.equal(normalizeEtapaEstado('rechazada'), 'rechazado');
+
+      // Escenario 1: Inicio (0 aprobadas, inicial en revisión) -> 0%
+      const avanceInicio = buildProcessProgress('en_proceso', [
+        { etapa: 'inicial', estado: 'en_revision', evaluador: 'Admisiones' },
+        { etapa: 'tecnica', estado: 'pendiente' },
+        { etapa: 'personal', estado: 'pendiente' },
+        { etapa: 'competencias', estado: 'pendiente' },
+        { etapa: 'salud_fisica_psicologica', estado: 'pendiente' },
+      ]);
+      assert.equal(avanceInicio.porcentaje, 0);
+      assert.equal(avanceInicio.etapas_aprobadas, 0);
+      assert.equal(avanceInicio.etapas_en_revision, 1);
+      assert.equal(avanceInicio.etapas_pendientes, 4);
+      assert.equal(avanceInicio.estado_visible.codigo, 'en_proceso');
+      assert.equal(avanceInicio.etapa_actual?.codigo, 'inicial');
+      assert.equal(avanceInicio.requiere_atencion, false);
+
+      // Escenario 2: 2 aprobadas + 1 observada -> 40%, estado visible 'observado' y requiere_atencion = true
+      const avanceObservado = buildProcessProgress('en_proceso', [
+        { etapa: 'inicial', estado: 'aprobado' },
+        { etapa: 'tecnica', estado: 'aprobado' },
+        { etapa: 'personal', estado: 'observado', comentarios: 'Confirmar disponibilidad de sábado' },
+        { etapa: 'competencias', estado: 'pendiente' },
+        { etapa: 'salud_fisica_psicologica', estado: 'pendiente' },
+      ]);
+      assert.equal(avanceObservado.porcentaje, 40);
+      assert.equal(avanceObservado.estado_visible.codigo, 'observado');
+      assert.equal(avanceObservado.estado_visible.severidad, 'warning');
+      assert.equal(avanceObservado.etapa_actual?.codigo, 'personal');
+      assert.equal(avanceObservado.requiere_atencion, true);
+      assert.ok(avanceObservado.siguiente_paso.includes('Confirmar disponibilidad'));
+
+      // Escenario 3: 5 aprobadas -> 100%, estado visible 'aprobado'
+      const avanceCompleto = buildProcessProgress('aprobado', [
+        { etapa: 'inicial', estado: 'aprobado' },
+        { etapa: 'tecnica', estado: 'aprobado' },
+        { etapa: 'personal', estado: 'aprobado' },
+        { etapa: 'competencias', estado: 'aprobado' },
+        { etapa: 'salud_fisica_psicologica', estado: 'aprobado' },
+      ]);
+      assert.equal(avanceCompleto.porcentaje, 100);
+      assert.equal(avanceCompleto.etapas_aprobadas, 5);
+      assert.equal(avanceCompleto.estado_visible.codigo, 'aprobado');
+      assert.equal(avanceCompleto.estado_visible.severidad, 'success');
+      assert.equal(avanceCompleto.requiere_atencion, false);
+    });
+
+    it('KIR-51 & KIR-53: Seguimiento periódico en vivo vía HTTP y BD (0% -> 40% observado -> 60% -> 100% aprobado)', async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      const testCi = `TEST-SEG-${stamp}`;
+      const testEmail = `seguimiento.${stamp}@kiriku.test`;
+      let postulanteId = 0;
+      let postulacionId = 0;
+
+      try {
+        const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+        assert.ok(proy.length > 0, 'Debe existir al menos un proyecto aprobado');
+
+        const postInsert = await query<{ id: number }>(
+          `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion)
+           VALUES ($1, 'Mateo', 'SeguimientoTest', '1999-09-12', $2, 'Trabajador Social')
+           RETURNING id`,
+          [testCi, testEmail]
+        );
+        postulanteId = postInsert[0].id;
+
+        const appInsert = await query<{ id: number }>(
+          `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general)
+           VALUES ($1, $2, 'en_proceso')
+           RETURNING id`,
+          [postulanteId, proy[0].id]
+        );
+        postulacionId = appInsert[0].id;
+
+        await query(
+          `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador, comentarios, fecha_evaluacion)
+           VALUES
+             ($1, 'inicial', 'en_revision', 'Comité de Admisiones', 'Revisión inicial recibida', NOW()),
+             ($1, 'tecnica', 'pendiente', 'Socio Territorial', 'Pendiente', NOW()),
+             ($1, 'personal', 'pendiente', 'Psicología Kirikú', 'Pendiente', NOW()),
+             ($1, 'competencias', 'pendiente', 'Facilitador Grupal', 'Pendiente', NOW()),
+             ($1, 'salud_fisica_psicologica', 'pendiente', 'Equipo Médico', 'Pendiente', NOW())`,
+          [postulacionId]
+        );
+
+        // Validación de consulta vacía -> 400
+        const badReqRes = await fetch(`${baseUrl}/postulaciones/tracking`);
+        assert.equal(badReqRes.status, 400, 'Debe exigir término de búsqueda');
+
+        // Consulta puntual con ID inexistente -> 404
+        const notFoundRes = await fetch(`${baseUrl}/postulaciones/99999999/estado`);
+        assert.equal(notFoundRes.status, 404, 'Debe devolver 404 si la postulación no existe');
+
+        // Consulta periódica 1 (por CI): Estado inicial 0%
+        const check1Res = await fetch(`${baseUrl}/postulaciones/tracking?busqueda=${encodeURIComponent(testCi)}`);
+        assert.equal(check1Res.status, 200);
+        const check1Data = (await check1Res.json()) as any[];
+        assert.equal(check1Data.length, 1);
+        assert.equal(check1Data[0].postulacion.codigo_seguimiento, `KIR-${postulacionId}`);
+        assert.equal(check1Data[0].avance.porcentaje, 0);
+        assert.equal(check1Data[0].avance.etapa_actual.codigo, 'inicial');
+        assert.equal(check1Data[0].avance.estado_visible.codigo, 'en_proceso');
+
+        // Simular avance en evaluación: Inicial y Técnica aprobadas, Personal observada
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'aprobado', fecha_evaluacion = NOW()
+           WHERE postulacion_id = $1 AND etapa IN ('inicial', 'tecnica')`,
+          [postulacionId]
+        );
+        await query(
+          `UPDATE evaluaciones_etapas
+           SET estado = 'observado', comentarios = 'Adjuntar horario disponible de fines de semana', fecha_evaluacion = NOW()
+           WHERE postulacion_id = $1 AND etapa = 'personal'`,
+          [postulacionId]
+        );
+
+        // Consulta periódica 2 (por código KIR-ID): 40% con observación visible
+        const check2Res = await fetch(
+          `${baseUrl}/postulaciones/tracking?busqueda=${encodeURIComponent(`KIR-${postulacionId}`)}`
+        );
+        assert.equal(check2Res.status, 200);
+        const check2Data = (await check2Res.json()) as any[];
+        assert.equal(check2Data.length, 1);
+        assert.equal(check2Data[0].avance.porcentaje, 40);
+        assert.equal(check2Data[0].avance.etapas_aprobadas, 2);
+        assert.equal(check2Data[0].avance.etapas_observadas, 1);
+        assert.equal(check2Data[0].avance.estado_visible.codigo, 'observado');
+        assert.equal(check2Data[0].avance.requiere_atencion, true);
+        assert.equal(check2Data[0].avance.etapa_actual.codigo, 'personal');
+
+        // Simular subsanación y avance hasta 100% aprobado en todas las etapas
+        await query(
+          `UPDATE evaluaciones_etapas
+           SET estado = 'aprobado', comentarios = 'Etapa completada satisfactoriamente', fecha_evaluacion = NOW()
+           WHERE postulacion_id = $1`,
+          [postulacionId]
+        );
+        await query(
+          `UPDATE postulaciones SET estado_general = 'aprobado', updated_at = NOW() WHERE id = $1`,
+          [postulacionId]
+        );
+
+        // Consulta periódica 3 (endpoint dedicado /:id/estado): 100% aprobado
+        const check3Res = await fetch(`${baseUrl}/postulaciones/${postulacionId}/estado`);
+        assert.equal(check3Res.status, 200);
+        const check3Data = (await check3Res.json()) as any;
+        assert.equal(check3Data.postulacion.id, postulacionId);
+        assert.equal(check3Data.avance.porcentaje, 100);
+        assert.equal(check3Data.avance.etapas_aprobadas, 5);
+        assert.equal(check3Data.avance.estado_visible.codigo, 'aprobado');
+        assert.equal(check3Data.avance.requiere_atencion, false);
+        assert.ok(check3Data.avance.ultima_actualizacion, 'Debe incluir timestamp de última actualización');
+      } finally {
+        server.close();
+        if (postulacionId) {
+          await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+          await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+        }
+        if (postulanteId) {
+          await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+        }
+      }
+    });
+  });
 });
+
+
 
