@@ -3,7 +3,11 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import test, { describe, it, after } from 'node:test';
 import express from 'express';
-import apiRouter from './api';
+import apiRouter, {
+  buildProcessProgress,
+  ETAPAS_PROCESO_DEFINICION,
+  normalizeEtapaEstado,
+} from './api';
 import { hasPermission } from './permissions';
 import { query, dbPool } from './supabase';
 
@@ -1428,6 +1432,191 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
       }
     });
   });
+
+  // ============================================================================
+  // KIR-29: Consultar estado y avance del proceso (KIR-50, KIR-51, KIR-52, KIR-53)
+  // ============================================================================
+  describe('KIR-29: Consultar estado y avance del proceso', () => {
+    it('KIR-50: Definición de estados visibles y cálculo de avance porcentual en las 5 etapas', () => {
+      assert.equal(ETAPAS_PROCESO_DEFINICION.length, 5, 'Deben existir exactamente 5 etapas definidas');
+      assert.equal(normalizeEtapaEstado('en revision'), 'en_revision');
+      assert.equal(normalizeEtapaEstado('aprobada'), 'aprobado');
+      assert.equal(normalizeEtapaEstado('observada'), 'observado');
+      assert.equal(normalizeEtapaEstado('rechazada'), 'rechazado');
+
+      // Escenario 1: Inicio (0 aprobadas, inicial en revisión) -> 0%
+      const avanceInicio = buildProcessProgress('en_proceso', [
+        { etapa: 'inicial', estado: 'en_revision', evaluador: 'Admisiones' },
+        { etapa: 'tecnica', estado: 'pendiente' },
+        { etapa: 'personal', estado: 'pendiente' },
+        { etapa: 'competencias', estado: 'pendiente' },
+        { etapa: 'salud_fisica_psicologica', estado: 'pendiente' },
+      ]);
+      assert.equal(avanceInicio.porcentaje, 0);
+      assert.equal(avanceInicio.etapas_aprobadas, 0);
+      assert.equal(avanceInicio.etapas_en_revision, 1);
+      assert.equal(avanceInicio.etapas_pendientes, 4);
+      assert.equal(avanceInicio.estado_visible.codigo, 'en_proceso');
+      assert.equal(avanceInicio.etapa_actual?.codigo, 'inicial');
+      assert.equal(avanceInicio.requiere_atencion, false);
+
+      // Escenario 2: 2 aprobadas + 1 observada -> 40%, estado visible 'observado' y requiere_atencion = true
+      const avanceObservado = buildProcessProgress('en_proceso', [
+        { etapa: 'inicial', estado: 'aprobado' },
+        { etapa: 'tecnica', estado: 'aprobado' },
+        { etapa: 'personal', estado: 'observado', comentarios: 'Confirmar disponibilidad de sábado' },
+        { etapa: 'competencias', estado: 'pendiente' },
+        { etapa: 'salud_fisica_psicologica', estado: 'pendiente' },
+      ]);
+      assert.equal(avanceObservado.porcentaje, 40);
+      assert.equal(avanceObservado.estado_visible.codigo, 'observado');
+      assert.equal(avanceObservado.estado_visible.severidad, 'warning');
+      assert.equal(avanceObservado.etapa_actual?.codigo, 'personal');
+      assert.equal(avanceObservado.requiere_atencion, true);
+      assert.ok(avanceObservado.siguiente_paso.includes('Confirmar disponibilidad'));
+
+      // Escenario 3: 5 aprobadas -> 100%, estado visible 'aprobado'
+      const avanceCompleto = buildProcessProgress('aprobado', [
+        { etapa: 'inicial', estado: 'aprobado' },
+        { etapa: 'tecnica', estado: 'aprobado' },
+        { etapa: 'personal', estado: 'aprobado' },
+        { etapa: 'competencias', estado: 'aprobado' },
+        { etapa: 'salud_fisica_psicologica', estado: 'aprobado' },
+      ]);
+      assert.equal(avanceCompleto.porcentaje, 100);
+      assert.equal(avanceCompleto.etapas_aprobadas, 5);
+      assert.equal(avanceCompleto.estado_visible.codigo, 'aprobado');
+      assert.equal(avanceCompleto.estado_visible.severidad, 'success');
+      assert.equal(avanceCompleto.requiere_atencion, false);
+    });
+
+    it('KIR-51 & KIR-53: Seguimiento periódico en vivo vía HTTP y BD (0% -> 40% observado -> 60% -> 100% aprobado)', async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      const testCi = `TEST-SEG-${stamp}`;
+      const testEmail = `seguimiento.${stamp}@kiriku.test`;
+      let postulanteId = 0;
+      let postulacionId = 0;
+
+      try {
+        const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+        assert.ok(proy.length > 0, 'Debe existir al menos un proyecto aprobado');
+
+        const postInsert = await query<{ id: number }>(
+          `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion)
+           VALUES ($1, 'Mateo', 'SeguimientoTest', '1999-09-12', $2, 'Trabajador Social')
+           RETURNING id`,
+          [testCi, testEmail]
+        );
+        postulanteId = postInsert[0].id;
+
+        const appInsert = await query<{ id: number }>(
+          `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general)
+           VALUES ($1, $2, 'en_proceso')
+           RETURNING id`,
+          [postulanteId, proy[0].id]
+        );
+        postulacionId = appInsert[0].id;
+
+        await query(
+          `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador, comentarios, fecha_evaluacion)
+           VALUES
+             ($1, 'inicial', 'en_revision', 'Comité de Admisiones', 'Revisión inicial recibida', NOW()),
+             ($1, 'tecnica', 'pendiente', 'Socio Territorial', 'Pendiente', NOW()),
+             ($1, 'personal', 'pendiente', 'Psicología Kirikú', 'Pendiente', NOW()),
+             ($1, 'competencias', 'pendiente', 'Facilitador Grupal', 'Pendiente', NOW()),
+             ($1, 'salud_fisica_psicologica', 'pendiente', 'Equipo Médico', 'Pendiente', NOW())`,
+          [postulacionId]
+        );
+
+        // Validación de consulta vacía -> 400
+        const badReqRes = await fetch(`${baseUrl}/postulaciones/tracking`);
+        assert.equal(badReqRes.status, 400, 'Debe exigir término de búsqueda');
+
+        // Consulta puntual con ID inexistente -> 404
+        const notFoundRes = await fetch(`${baseUrl}/postulaciones/99999999/estado`);
+        assert.equal(notFoundRes.status, 404, 'Debe devolver 404 si la postulación no existe');
+
+        // Consulta periódica 1 (por CI): Estado inicial 0%
+        const check1Res = await fetch(`${baseUrl}/postulaciones/tracking?busqueda=${encodeURIComponent(testCi)}`);
+        assert.equal(check1Res.status, 200);
+        const check1Data = (await check1Res.json()) as any[];
+        assert.equal(check1Data.length, 1);
+        assert.equal(check1Data[0].postulacion.codigo_seguimiento, `KIR-${postulacionId}`);
+        assert.equal(check1Data[0].avance.porcentaje, 0);
+        assert.equal(check1Data[0].avance.etapa_actual.codigo, 'inicial');
+        assert.equal(check1Data[0].avance.estado_visible.codigo, 'en_proceso');
+
+        // Simular avance en evaluación: Inicial y Técnica aprobadas, Personal observada
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'aprobado', fecha_evaluacion = NOW()
+           WHERE postulacion_id = $1 AND etapa IN ('inicial', 'tecnica')`,
+          [postulacionId]
+        );
+        await query(
+          `UPDATE evaluaciones_etapas
+           SET estado = 'observado', comentarios = 'Adjuntar horario disponible de fines de semana', fecha_evaluacion = NOW()
+           WHERE postulacion_id = $1 AND etapa = 'personal'`,
+          [postulacionId]
+        );
+
+        // Consulta periódica 2 (por código KIR-ID): 40% con observación visible
+        const check2Res = await fetch(
+          `${baseUrl}/postulaciones/tracking?busqueda=${encodeURIComponent(`KIR-${postulacionId}`)}`
+        );
+        assert.equal(check2Res.status, 200);
+        const check2Data = (await check2Res.json()) as any[];
+        assert.equal(check2Data.length, 1);
+        assert.equal(check2Data[0].avance.porcentaje, 40);
+        assert.equal(check2Data[0].avance.etapas_aprobadas, 2);
+        assert.equal(check2Data[0].avance.etapas_observadas, 1);
+        assert.equal(check2Data[0].avance.estado_visible.codigo, 'observado');
+        assert.equal(check2Data[0].avance.requiere_atencion, true);
+        assert.equal(check2Data[0].avance.etapa_actual.codigo, 'personal');
+
+        // Simular subsanación y avance hasta 100% aprobado en todas las etapas
+        await query(
+          `UPDATE evaluaciones_etapas
+           SET estado = 'aprobado', comentarios = 'Etapa completada satisfactoriamente', fecha_evaluacion = NOW()
+           WHERE postulacion_id = $1`,
+          [postulacionId]
+        );
+        await query(
+          `UPDATE postulaciones SET estado_general = 'aprobado', updated_at = NOW() WHERE id = $1`,
+          [postulacionId]
+        );
+
+        // Consulta periódica 3 (endpoint dedicado /:id/estado): 100% aprobado
+        const check3Res = await fetch(`${baseUrl}/postulaciones/${postulacionId}/estado`);
+        assert.equal(check3Res.status, 200);
+        const check3Data = (await check3Res.json()) as any;
+        assert.equal(check3Data.postulacion.id, postulacionId);
+        assert.equal(check3Data.avance.porcentaje, 100);
+        assert.equal(check3Data.avance.etapas_aprobadas, 5);
+        assert.equal(check3Data.avance.estado_visible.codigo, 'aprobado');
+        assert.equal(check3Data.avance.requiere_atencion, false);
+        assert.ok(check3Data.avance.ultima_actualizacion, 'Debe incluir timestamp de última actualización');
+      } finally {
+        server.close();
+        if (postulacionId) {
+          await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+          await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+        }
+        if (postulanteId) {
+          await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+        }
+      }
+    });
+  });
 });
+
 
 
