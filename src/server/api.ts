@@ -6,6 +6,11 @@ import {
   isCompetencyDecision,
   validateCompetencyScores,
 } from './competency-evaluation';
+import {
+  calculatePersonalAverage,
+  isPersonalDecision,
+  validatePersonalScores,
+} from './personal-evaluation';
 
 const router: Router = express.Router();
 
@@ -1774,6 +1779,169 @@ router.post('/evaluaciones/tecnica/:postulacion_id', async (req: Request, res: R
 });
 
 
+// KIR-63: Consulta de postulaciones listas para la entrevista personal.
+router.get('/evaluaciones/personal', async (req: Request, res: Response) => {
+  try {
+    const { estado, proyecto_id, q } = req.query;
+    let sql = `
+      SELECT ee.id AS etapa_id, ee.postulacion_id, ee.estado AS etapa_estado,
+             ee.evaluador, ee.comentarios, ee.fecha_evaluacion, ee.detalle_criterios_personales,
+             ee_tecnica.estado AS tecnica_estado,
+             p.id AS postulante_id, p.nombres, p.apellidos, p.ci, p.email, p.telefono,
+             p.fecha_nacimiento, p.profesion_ocupacion, p.habilidades, p.motivacion,
+             proy.id AS proyecto_id, proy.titulo AS proyecto_titulo,
+             proy.ubicacion AS proyecto_ubicacion, org.nombre AS organizacion_nombre
+      FROM evaluaciones_etapas ee
+      JOIN evaluaciones_etapas ee_tecnica
+        ON ee_tecnica.postulacion_id = ee.postulacion_id AND ee_tecnica.etapa = 'tecnica'
+      JOIN postulaciones app ON app.id = ee.postulacion_id
+      JOIN postulantes p ON p.id = app.postulante_id
+      JOIN proyectos proy ON proy.id = app.proyecto_id
+      LEFT JOIN organizaciones org ON org.id = proy.organizacion_id
+      WHERE ee.etapa = 'personal'
+    `;
+    const params: any[] = [];
+
+    if (estado && typeof estado === 'string') {
+      const normalized = estado.trim().toLowerCase();
+      if (['pendiente', 'pendientes', 'en_revision'].includes(normalized)) {
+        sql += ` AND ee_tecnica.estado = 'aprobado' AND ee.estado IN ('pendiente', 'en_revision')`;
+      } else if (normalized === 'bloqueadas' || normalized === 'bloqueada') {
+        sql += ` AND ee_tecnica.estado != 'aprobado'`;
+      } else if (normalized !== 'todos') {
+        const statusMap: Record<string, string> = { aprobados: 'aprobado', observados: 'observado', rechazados: 'rechazado' };
+        params.push(statusMap[normalized] || normalized);
+        sql += ` AND ee.estado = $${params.length}`;
+      }
+    }
+    if (proyecto_id) {
+      params.push(proyecto_id);
+      sql += ` AND proy.id = $${params.length}`;
+    }
+    if (q && typeof q === 'string' && q.trim()) {
+      params.push(`%${q.trim()}%`);
+      sql += ` AND (p.nombres ILIKE $${params.length} OR p.apellidos ILIKE $${params.length}
+        OR p.ci ILIKE $${params.length} OR COALESCE(p.profesion_ocupacion, '') ILIKE $${params.length}
+        OR COALESCE(p.habilidades, '') ILIKE $${params.length} OR proy.titulo ILIKE $${params.length})`;
+    }
+    sql += ' ORDER BY ee.id DESC';
+
+    const rows = await query<any>(sql, params);
+    const formatted = rows.map((row: any) => {
+      const criteria = row.detalle_criterios_personales && typeof row.detalle_criterios_personales === 'object'
+        ? row.detalle_criterios_personales
+        : {};
+      const scoreCount = Object.values(criteria).filter((value) => typeof value === 'number').length;
+      const age = calculateAge(row.fecha_nacimiento);
+      return {
+        etapa_id: row.etapa_id,
+        postulacion_id: row.postulacion_id,
+        etapa_estado: row.etapa_estado,
+        evaluador: row.evaluador,
+        comentarios: row.comentarios,
+        fecha_evaluacion: row.fecha_evaluacion,
+        detalle_criterios_personales: criteria,
+        puntaje_promedio: scoreCount === 5 ? calculatePersonalAverage(criteria) : null,
+        tecnica_estado: row.tecnica_estado,
+        puede_evaluar: row.tecnica_estado === 'aprobado',
+        postulante: {
+          id: row.postulante_id,
+          nombres: row.nombres,
+          apellidos: row.apellidos,
+          ci: row.ci,
+          email: row.email,
+          telefono: row.telefono,
+          fecha_nacimiento: row.fecha_nacimiento,
+          edad: age,
+          es_mayor_edad: age >= 18,
+          profesion_ocupacion: row.profesion_ocupacion,
+          habilidades: row.habilidades,
+          motivacion: row.motivacion,
+        },
+        proyecto: {
+          id: row.proyecto_id,
+          titulo: row.proyecto_titulo,
+          ubicacion: row.proyecto_ubicacion,
+          organizacion_nombre: row.organizacion_nombre,
+        },
+      };
+    });
+    res.json(formatted);
+  } catch (err: any) {
+    console.error('Error fetching personal evaluations:', err);
+    res.status(500).json({ error: 'Error al consultar evaluaciones personales' });
+  }
+});
+
+// KIR-63: Registra entrevista personal y habilita la etapa por competencias.
+router.post('/evaluaciones/personal/:postulacion_id', async (req: Request, res: Response) => {
+  try {
+    const { postulacion_id } = req.params;
+    const { estado, evaluador, comentarios, criterios } = req.body ?? {};
+
+    if (!isPersonalDecision(estado)) {
+      return res.status(400).json({ error: 'La decisión debe ser aprobado, observado o rechazado' });
+    }
+    if (!validatePersonalScores(criterios)) {
+      return res.status(400).json({ error: 'Asigne una puntuación de 1 a 5 a cada criterio de entrevista personal' });
+    }
+    if ((estado === 'rechazado' || estado === 'observado') &&
+        (typeof comentarios !== 'string' || comentarios.trim().length < 5)) {
+      return res.status(400).json({ error: 'Detalle el motivo de la observación o rechazo (mínimo 5 caracteres)' });
+    }
+
+    const previousStage = await query<{ estado: string }>(
+      `SELECT estado FROM evaluaciones_etapas WHERE postulacion_id = $1 AND etapa = 'tecnica'`,
+      [postulacion_id]
+    );
+    if (!previousStage.length) {
+      return res.status(404).json({ error: 'No se encontró la postulación o su etapa técnica' });
+    }
+    if (previousStage[0].estado !== 'aprobado') {
+      return res.status(400).json({ error: 'La etapa técnica debe estar aprobada antes de la entrevista personal' });
+    }
+
+    const evaluatorName = typeof evaluador === 'string' && evaluador.trim()
+      ? evaluador.trim()
+      : 'Comité de Entrevista Personal';
+    const scoreAverage = calculatePersonalAverage(criterios);
+    const comments = typeof comentarios === 'string' ? comentarios.trim() : '';
+    const updated = await query<any>(
+      `UPDATE evaluaciones_etapas
+       SET estado = $1, detalle_criterios_personales = $2::jsonb,
+           comentarios = $3, evaluador = $4, fecha_evaluacion = NOW()
+       WHERE postulacion_id = $5 AND etapa = 'personal'
+       RETURNING *`,
+      [estado, JSON.stringify(criterios), comments || `Puntaje promedio: ${scoreAverage}/5`, evaluatorName, postulacion_id]
+    );
+    if (!updated.length) {
+      return res.status(404).json({ error: 'No se encontró la etapa personal para esta postulación' });
+    }
+
+    if (estado === 'aprobado') {
+      await query(
+        `UPDATE evaluaciones_etapas SET estado = 'en_revision', fecha_evaluacion = NOW()
+         WHERE postulacion_id = $1 AND etapa = 'competencias' AND estado = 'pendiente'`,
+        [postulacion_id]
+      );
+      await query(`UPDATE postulaciones SET estado_general = 'en_proceso', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
+    } else if (estado === 'rechazado') {
+      await query(`UPDATE postulaciones SET estado_general = 'rechazado', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
+    }
+
+    res.json({
+      message: `Evaluación personal registrada (${estado})`,
+      etapa: updated[0],
+      postulacion_id: Number(postulacion_id),
+      puntaje_promedio: scoreAverage,
+      estado_general: estado === 'rechazado' ? 'rechazado' : 'en_proceso',
+    });
+  } catch (err: any) {
+    console.error('Error recording personal evaluation:', err);
+    res.status(500).json({ error: 'Error al registrar evaluación personal' });
+  }
+});
+
 // KIR-59: Consulta de postulaciones en la evaluación por competencias.
 router.get('/evaluaciones/competencias', async (req: Request, res: Response) => {
   try {
@@ -1957,8 +2125,8 @@ router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
     if (!stageRows.length) {
       return res.status(404).json({ error: 'Etapa de evaluación no encontrada' });
     }
-    if (stageRows[0].etapa === 'competencias') {
-      return res.status(400).json({ error: 'Use el formulario de evaluación por competencias para registrar la rúbrica' });
+    if (stageRows[0].etapa === 'competencias' || stageRows[0].etapa === 'personal') {
+      return res.status(400).json({ error: 'Use el formulario especializado de la etapa para registrar su rúbrica' });
     }
 
     const rows = await query(
