@@ -37,6 +37,12 @@ async function login() {
     });
     localStorage.setItem('kiriku_admin_token', res.token || 'dev-admin-token');
     localStorage.setItem('kiriku_user_email', res.user?.email || email.value);
+    if (res.user?.rol) {
+      localStorage.setItem('kiriku_user_role', res.user.rol);
+    }
+    if (Array.isArray(res.user?.permisos)) {
+      localStorage.setItem('kiriku_user_permissions', JSON.stringify(res.user.permisos));
+    }
     router.replace(String(route.query.redirect || '/admin'));
   } catch (err: any) {
     error.value = err?.response?.data?.error || 'Correo o contraseña incorrectos.';
