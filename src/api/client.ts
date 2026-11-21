@@ -11,6 +11,8 @@ import type {
   EvaluacionInicialItem,
   RegistrarEvaluacionInicialPayload,
   EvaluacionTecnicaItem,
+  EvaluacionCompetenciasItem,
+  RegistrarEvaluacionCompetenciasPayload,
   RegistrarEvaluacionTecnicaPayload,
   Donacion,
   CreatePostulantePayload,
@@ -308,6 +310,24 @@ export const api = {
     payload: RegistrarEvaluacionTecnicaPayload
   ): Promise<any> {
     const res = await apiClient.post(`/evaluaciones/tecnica/${postulacionId}`, payload);
+    return res.data;
+  },
+
+  // KIR-59: Gestión de la evaluación por competencias.
+  async getCompetencyEvaluations(params?: {
+    estado?: string;
+    proyecto_id?: number | string;
+    q?: string;
+  }): Promise<EvaluacionCompetenciasItem[]> {
+    const res = await apiClient.get<EvaluacionCompetenciasItem[]>('/evaluaciones/competencias', { params });
+    return res.data;
+  },
+
+  async submitCompetencyEvaluation(
+    postulacionId: number | string,
+    payload: RegistrarEvaluacionCompetenciasPayload
+  ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
+    const res = await apiClient.post(`/evaluaciones/competencias/${postulacionId}`, payload);
     return res.data;
   },
 
