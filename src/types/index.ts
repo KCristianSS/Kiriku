@@ -182,6 +182,51 @@ export interface RegistrarEvaluacionTecnicaPayload {
   criterios?: EvaluacionTecnicaCriterios;
 }
 
+// KIR-54: Estructura de evaluación de salud física y psicológica (Etapa 5)
+export interface EvaluacionSaludCriterios {
+  apto_fisico?: boolean;
+  apto_psicologico?: boolean;
+  examen_medico_vigente?: boolean;
+  condicion_especifica_atendida?: boolean;
+}
+
+export interface EvaluacionSaludItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  postulacion_fecha: string;
+  postulacion_estado: PostulacionEstado;
+  inicial_estado: EtapaEstado | string;
+  tecnica_estado: EtapaEstado | string;
+  personal_estado: EtapaEstado | string;
+  competencias_estado: EtapaEstado | string;
+  puede_evaluar: boolean;
+  postulante: Postulante & {
+    edad: number;
+    es_mayor_edad: boolean;
+  };
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    cupos_disponibles?: number;
+    organizacion_id?: number | string | null;
+    organizacion_nombre?: string | null;
+  };
+}
+
+export interface RegistrarEvaluacionSaludPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado' | 'en_revision';
+  evaluador: string;
+  comentarios: string;
+  puntaje_bienestar?: number;
+  nivel_riesgo?: 'bajo' | 'moderado' | 'alto';
+  criterios?: EvaluacionSaludCriterios;
+}
+
 
 export interface Postulacion {
   id: number | string;
