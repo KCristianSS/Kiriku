@@ -182,6 +182,43 @@ export interface RegistrarEvaluacionTecnicaPayload {
   criterios?: EvaluacionTecnicaCriterios;
 }
 
+// KIR-58: Rúbrica estructurada para la evaluación por competencias.
+export interface EvaluacionCompetenciasCriterios {
+  trabajo_equipo: number;
+  comunicacion: number;
+  liderazgo: number;
+  resolucion_problemas: number;
+  empatia_adaptabilidad: number;
+}
+
+export interface EvaluacionCompetenciasItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  detalle_criterios: EvaluacionCompetenciasCriterios;
+  puntaje_promedio: number | null;
+  tecnica_estado: EtapaEstado | string;
+  personal_estado: EtapaEstado | string;
+  puede_evaluar: boolean;
+  postulante: Postulante;
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    organizacion_nombre?: string | null;
+  };
+}
+
+export interface RegistrarEvaluacionCompetenciasPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado';
+  evaluador: string;
+  comentarios: string;
+  criterios: EvaluacionCompetenciasCriterios;
+}
+
 
 export interface Postulacion {
   id: number | string;
