@@ -767,15 +767,225 @@ router.post('/postulaciones', async (req: Request, res: Response) => {
   }
 });
 
-// Seguimiento del Postulante en tiempo real (por CI o Email)
+// -------------------------------------------------------------
+// DEFINICIÓN DE ESTADOS Y AVANCE VISIBLE DEL PROCESO (KIR-29: KIR-50 & KIR-51)
+// -------------------------------------------------------------
+export const ETAPAS_PROCESO_DEFINICION = [
+  {
+    codigo: 'inicial',
+    orden: 1,
+    nombre: '1. Etapa Inicial',
+    descripcion: 'Recepción y verificación de CI, mayoría de edad y requisitos formales.',
+  },
+  {
+    codigo: 'tecnica',
+    orden: 2,
+    nombre: '2. Evaluación Técnica',
+    descripcion: 'Validación por el socio territorial de capacidades y perfil de voluntariado.',
+  },
+  {
+    codigo: 'personal',
+    orden: 3,
+    nombre: '3. Entrevista Personal',
+    descripcion: 'Entrevista individual de motivación, compromiso y disponibilidad horaria.',
+  },
+  {
+    codigo: 'competencias',
+    orden: 4,
+    nombre: '4. Evaluación de Competencias',
+    descripcion: 'Taller de dinámica grupal, resolución de dilemas éticos y trabajo en equipo.',
+  },
+  {
+    codigo: 'salud_fisica_psicologica',
+    orden: 5,
+    nombre: '5. Salud Física y Psicológica',
+    descripcion: 'Dictamen de aptitud física y bienestar psicológico para actividades comunitarias.',
+  },
+] as const;
+
+export function normalizeEtapaEstado(estado: unknown): 'pendiente' | 'en_revision' | 'aprobado' | 'observado' | 'rechazado' {
+  if (!estado) return 'pendiente';
+  const norm = String(estado).trim().toLowerCase();
+  if (norm === 'aprobada' || norm === 'aprobado') return 'aprobado';
+  if (norm === 'rechazada' || norm === 'rechazado') return 'rechazado';
+  if (norm === 'observada' || norm === 'observado') return 'observado';
+  if (norm === 'en revision' || norm === 'en revisión' || norm === 'en_revisión' || norm === 'en_revision' || norm === 'en_curso') {
+    return 'en_revision';
+  }
+  return 'pendiente';
+}
+
+export function enrichStagesForTracking(rawEtapas: any[]) {
+  const byCode = new Map<string, any>();
+  for (const e of rawEtapas || []) {
+    byCode.set(String(e.etapa), e);
+  }
+
+  return ETAPAS_PROCESO_DEFINICION.map((def) => {
+    const found = byCode.get(def.codigo);
+    const normalizedEstado = normalizeEtapaEstado(found?.estado);
+    return {
+      id: found?.id ?? `virtual-${def.codigo}`,
+      postulacion_id: found?.postulacion_id ?? null,
+      etapa: def.codigo,
+      estado: normalizedEstado,
+      evaluador: found?.evaluador ?? null,
+      comentarios: found?.comentarios ?? null,
+      fecha_evaluacion: found?.fecha_evaluacion ?? null,
+      orden: def.orden,
+      titulo_etapa: def.nombre,
+      descripcion_etapa: def.descripcion,
+    };
+  });
+}
+
+export function buildProcessProgress(
+  estadoGeneral: string,
+  rawEtapas: any[],
+  updatedAt?: string | Date | null
+) {
+  const etapas = enrichStagesForTracking(rawEtapas);
+  const total = ETAPAS_PROCESO_DEFINICION.length;
+
+  let aprobadas = 0;
+  let enRevision = 0;
+  let observadas = 0;
+  let rechazadas = 0;
+  let pendientes = 0;
+
+  let latestTimestamp: number = updatedAt ? new Date(updatedAt).getTime() : 0;
+  if (isNaN(latestTimestamp)) latestTimestamp = 0;
+
+  for (const e of etapas) {
+    if (e.estado === 'aprobado') aprobadas++;
+    else if (e.estado === 'en_revision') enRevision++;
+    else if (e.estado === 'observado') observadas++;
+    else if (e.estado === 'rechazado') rechazadas++;
+    else pendientes++;
+
+    if (e.fecha_evaluacion) {
+      const ts = new Date(e.fecha_evaluacion).getTime();
+      if (!isNaN(ts) && ts > latestTimestamp) {
+        latestTimestamp = ts;
+      }
+    }
+  }
+
+  const porcentaje = Math.round((aprobadas / total) * 100);
+
+  // Determinar etapa actual prioritaria para mostrar al postulante
+  const activeStage =
+    etapas.find((e) => e.estado === 'rechazado') ||
+    etapas.find((e) => e.estado === 'observado') ||
+    etapas.find((e) => e.estado === 'en_revision') ||
+    (aprobadas === total ? etapas[total - 1] : etapas.find((e) => e.estado === 'pendiente')) ||
+    etapas[0];
+
+  const etapaActual = activeStage
+    ? {
+        codigo: activeStage.etapa,
+        nombre: activeStage.titulo_etapa,
+        orden: activeStage.orden,
+        estado: activeStage.estado,
+        evaluador: activeStage.evaluador,
+        comentarios: activeStage.comentarios,
+        fecha_evaluacion: activeStage.fecha_evaluacion,
+      }
+    : null;
+
+  const generalNorm = String(estadoGeneral || 'en_proceso').trim().toLowerCase();
+  const isRejected = generalNorm === 'rechazado' || rechazadas > 0;
+  const isApproved = !isRejected && (generalNorm === 'aprobado' || aprobadas === total);
+  const isObserved = !isRejected && !isApproved && observadas > 0;
+  const isReasignacion = !isRejected && !isApproved && (generalNorm === 'reasignacion' || generalNorm === 'reenganche');
+
+  let estado_visible: {
+    codigo: 'en_proceso' | 'observado' | 'aprobado' | 'rechazado' | 'reasignacion';
+    etiqueta: string;
+    descripcion: string;
+    severidad: 'info' | 'success' | 'warning' | 'danger';
+  };
+  let siguiente_paso = '';
+
+  if (isRejected) {
+    estado_visible = {
+      codigo: 'rechazado',
+      etiqueta: 'No Seleccionado',
+      descripcion: 'El proceso de evaluación concluyó sin aprobación en una de las etapas.',
+      severidad: 'danger',
+    };
+    siguiente_paso = etapaActual?.comentarios
+      ? `Revisa el detalle en ${etapaActual.nombre}: "${etapaActual.comentarios}". Puedes postular a otros proyectos compatibles.`
+      : 'Puedes explorar otras iniciativas disponibles en el catálogo de proyectos.';
+  } else if (isApproved) {
+    estado_visible = {
+      codigo: 'aprobado',
+      etiqueta: 'Postulación Aprobada',
+      descripcion: 'Has completado y aprobado satisfactoriamente las 5 etapas de selección.',
+      severidad: 'success',
+    };
+    siguiente_paso =
+      '¡Felicidades! Completaste el 100% de las etapas. El coordinador del proyecto se comunicará contigo para la inducción.';
+  } else if (isObserved) {
+    estado_visible = {
+      codigo: 'observado',
+      etiqueta: 'Con Observaciones',
+      descripcion: 'Una etapa requiere tu atención o subsanación antes de continuar al siguiente nivel.',
+      severidad: 'warning',
+    };
+    siguiente_paso = etapaActual
+      ? `Revisa la observación en ${etapaActual.nombre}${etapaActual.comentarios ? `: "${etapaActual.comentarios}"` : '.'}`
+      : 'Revisa las observaciones registradas por el equipo evaluador.';
+  } else if (isReasignacion) {
+    estado_visible = {
+      codigo: 'reasignacion',
+      etiqueta: 'En Reasignación',
+      descripcion: 'Tu perfil está siendo evaluado para reasignación a un proyecto con cupos disponibles.',
+      severidad: 'info',
+    };
+    siguiente_paso = 'El equipo de coordinación confirmará pronto la nueva asignación de proyecto.';
+  } else {
+    estado_visible = {
+      codigo: 'en_proceso',
+      etiqueta: 'En Proceso de Evaluación',
+      descripcion: 'Tu postulación avanza activamente a través de las 5 etapas de selección.',
+      severidad: 'info',
+    };
+    if (etapaActual) {
+      const evalRef = etapaActual.evaluador ? ` a cargo de ${etapaActual.evaluador}` : '';
+      siguiente_paso = `Actualmente en ${etapaActual.nombre}${evalRef}. Vuelve a consultar periódicamente para ver actualizaciones.`;
+    } else {
+      siguiente_paso = 'Tu postulación se encuentra registrada en espera de revisión.';
+    }
+  }
+
+  return {
+    porcentaje,
+    etapas_totales: total,
+    etapas_aprobadas: aprobadas,
+    etapas_en_revision: enRevision,
+    etapas_observadas: observadas,
+    etapas_rechazadas: rechazadas,
+    etapas_pendientes: pendientes,
+    estado_visible,
+    etapa_actual: etapaActual,
+    siguiente_paso,
+    requiere_atencion: isObserved || isRejected,
+    ultima_actualizacion: latestTimestamp > 0 ? new Date(latestTimestamp).toISOString() : null,
+  };
+}
+
+// KIR-51: Seguimiento del Postulante en tiempo real (por CI, Correo, Nombre o Código KIR-ID)
 router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
   try {
     const { busqueda } = req.query;
-    if (!busqueda || typeof busqueda !== 'string') {
-      return res.status(400).json({ error: 'Ingrese su CI o Correo Electrónico para consultar' });
+    if (!busqueda || typeof busqueda !== 'string' || !busqueda.trim()) {
+      return res.status(400).json({ error: 'Ingrese su CI, Correo Electrónico o Código de Seguimiento para consultar' });
     }
 
     const term = busqueda.trim();
+    const codeMatch = term.match(/^(?:KIR-?|#)?(\d+)$/i);
+    const trackingId = codeMatch ? parseInt(codeMatch[1], 10) : null;
 
     const postRows = await query(
       `SELECT p.*,
@@ -799,18 +1009,19 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
           OR LOWER(p.email) = LOWER(TRIM($1))
           OR LOWER(p.email) LIKE LOWER($2)
           OR LOWER(p.nombres || ' ' || p.apellidos) LIKE LOWER($2)
+          OR ($3::int IS NOT NULL AND app.id = $3::int)
        ORDER BY app.created_at DESC`,
-      [term, `%${term}%`]
+      [term, `%${term}%`, trackingId]
     );
 
     if (!postRows.length) {
       return res.json([]);
     }
 
-    // Para cada postulación, obtener sus 5 etapas de evaluación
+    // Para cada postulación, obtener sus 5 etapas de evaluación y calcular avance visible
     const results = [];
     for (const row of postRows) {
-      const etapas = await query(
+      const rawEtapas = await query(
         `SELECT * FROM evaluaciones_etapas 
          WHERE postulacion_id = $1 
          ORDER BY 
@@ -825,6 +1036,9 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
         [row.postulacion_id]
       );
 
+      const etapas = enrichStagesForTracking(rawEtapas);
+      const avance = buildProcessProgress(row.estado_general, rawEtapas, row.fecha_actualizacion);
+
       results.push({
         postulante: {
           id: row.id,
@@ -837,6 +1051,7 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
         },
         postulacion: {
           id: row.postulacion_id,
+          codigo_seguimiento: `KIR-${row.postulacion_id}`,
           estado_general: row.estado_general,
           es_reasignacion: row.es_reasignacion,
           es_reenganche: row.es_reasignacion,
@@ -851,6 +1066,7 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
           },
           etapas,
         },
+        avance,
       });
     }
 
@@ -858,6 +1074,94 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Error tracking postulant:', err);
     res.status(500).json({ error: 'Error al consultar seguimiento de postulación' });
+  }
+});
+
+// KIR-51 & KIR-53: Consulta periódica puntual del estado y avance por ID de postulación
+router.get('/postulaciones/:id/estado', async (req: Request, res: Response) => {
+  try {
+    const rawId = String(req.params.id || '').replace(/^KIR-?/i, '').trim();
+    if (!/^\d+$/.test(rawId)) {
+      return res.status(400).json({ error: 'El identificador de postulación debe ser numérico' });
+    }
+    const postulacionId = parseInt(rawId, 10);
+
+    const rows = await query(
+      `SELECT p.*,
+              app.id as postulacion_id,
+              app.proyecto_id,
+              app.estado_general,
+              app.es_reasignacion,
+              app.created_at as fecha_postulacion,
+              app.updated_at as fecha_actualizacion,
+              proy.titulo as proyecto_titulo,
+              proy.ubicacion as proyecto_ubicacion,
+              proy.portada_url as proyecto_portada,
+              org.nombre as organizacion_nombre
+       FROM postulaciones app
+       JOIN postulantes p ON app.postulante_id = p.id
+       JOIN proyectos proy ON app.proyecto_id = proy.id
+       LEFT JOIN organizaciones org ON proy.organizacion_id = org.id
+       WHERE app.id = $1
+       LIMIT 1`,
+      [postulacionId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Postulación no encontrada' });
+    }
+
+    const row = rows[0];
+    const rawEtapas = await query(
+      `SELECT * FROM evaluaciones_etapas
+       WHERE postulacion_id = $1
+       ORDER BY
+         CASE etapa
+           WHEN 'inicial' THEN 1
+           WHEN 'tecnica' THEN 2
+           WHEN 'personal' THEN 3
+           WHEN 'competencias' THEN 4
+           WHEN 'salud_fisica_psicologica' THEN 5
+           ELSE 6
+         END ASC`,
+      [row.postulacion_id]
+    );
+
+    const etapas = enrichStagesForTracking(rawEtapas);
+    const avance = buildProcessProgress(row.estado_general, rawEtapas, row.fecha_actualizacion);
+
+    res.json({
+      postulante: {
+        id: row.id,
+        nombres: row.nombres,
+        apellidos: row.apellidos,
+        email: row.email,
+        ci: row.ci,
+        telefono: row.telefono,
+        profesion_ocupacion: row.profesion_ocupacion,
+      },
+      postulacion: {
+        id: row.postulacion_id,
+        codigo_seguimiento: `KIR-${row.postulacion_id}`,
+        estado_general: row.estado_general,
+        es_reasignacion: row.es_reasignacion,
+        es_reenganche: row.es_reasignacion,
+        created_at: row.fecha_postulacion,
+        updated_at: row.fecha_actualizacion,
+        proyecto: {
+          id: row.proyecto_id,
+          titulo: row.proyecto_titulo,
+          ubicacion: row.proyecto_ubicacion,
+          portada_url: row.proyecto_portada,
+          organizacion_nombre: row.organizacion_nombre,
+        },
+        etapas,
+      },
+      avance,
+    });
+  } catch (err: any) {
+    console.error('Error fetching application status by ID:', err);
+    res.status(500).json({ error: 'Error al consultar el estado de la postulación' });
   }
 });
 

@@ -3,16 +3,18 @@ import { ref } from 'vue';
 import { api } from '../api/client';
 import type {
   Postulacion,
+  PostulacionTrackingItem,
   Postulante,
   CreatePostulantePayload,
-  EvaluacionEtapa,
 } from '../types';
 
 export const useApplicationsStore = defineStore('applications', () => {
   const applications = ref<Postulacion[]>([]);
-  const trackingResults = ref<any[]>([]);
+  const trackingResults = ref<PostulacionTrackingItem[]>([]);
   const applicantsPool = ref<Array<Postulante & { total_postulaciones: number; ultima_postulacion?: string }>>([]);
   const loading = ref(false);
+  const refreshing = ref(false);
+  const lastCheckedAt = ref<string | null>(null);
   const error = ref<string | null>(null);
 
   async function submitApplication(payload: CreatePostulantePayload) {
@@ -35,12 +37,51 @@ export const useApplicationsStore = defineStore('applications', () => {
     try {
       const results = await api.trackApplication(busqueda);
       trackingResults.value = results;
+      lastCheckedAt.value = new Date().toISOString();
       return results;
     } catch (err: any) {
       error.value = err?.response?.data?.error || 'Error al rastrear postulación';
       throw err;
     } finally {
       loading.value = false;
+    }
+  }
+
+  async function refreshTracking(busqueda: string) {
+    if (!busqueda.trim()) return [];
+    refreshing.value = true;
+    error.value = null;
+    try {
+      const results = await api.trackApplication(busqueda);
+      trackingResults.value = results;
+      lastCheckedAt.value = new Date().toISOString();
+      return results;
+    } catch (err: any) {
+      error.value = err?.response?.data?.error || 'Error al actualizar el seguimiento';
+      throw err;
+    } finally {
+      refreshing.value = false;
+    }
+  }
+
+  async function refreshSingleApplicationStatus(postulacionId: number | string) {
+    refreshing.value = true;
+    error.value = null;
+    try {
+      const updated = await api.getApplicationStatus(postulacionId);
+      const idx = trackingResults.value.findIndex(
+        (item) => String(item.postulacion.id) === String(postulacionId)
+      );
+      if (idx !== -1) {
+        trackingResults.value[idx] = updated;
+      }
+      lastCheckedAt.value = new Date().toISOString();
+      return updated;
+    } catch (err: any) {
+      error.value = err?.response?.data?.error || 'Error al actualizar estado de postulación';
+      throw err;
+    } finally {
+      refreshing.value = false;
     }
   }
 
@@ -127,9 +168,13 @@ export const useApplicationsStore = defineStore('applications', () => {
     trackingResults,
     applicantsPool,
     loading,
+    refreshing,
+    lastCheckedAt,
     error,
     submitApplication,
     trackApplication,
+    refreshTracking,
+    refreshSingleApplicationStatus,
     fetchAdminApplications,
     fetchApplicantsPool,
     updateEvaluationStage,

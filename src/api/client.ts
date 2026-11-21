@@ -4,6 +4,7 @@ import type {
   Proyecto,
   Organizacion,
   Postulacion,
+  PostulacionTrackingItem,
   Postulante,
   PostulanteBancoItem,
   PostulanteMetricasResumen,
@@ -192,30 +193,15 @@ export const api = {
     return res.data;
   },
 
-  async trackApplication(busqueda: string): Promise<
-    Array<{
-      postulante: Postulante;
-      postulacion: {
-        id: number | string;
-        estado_general: string;
-        es_reasignacion: boolean;
-        es_reenganche?: boolean;
-        created_at: string;
-        updated_at: string;
-        proyecto: {
-          id: number | string;
-          titulo: string;
-          ubicacion: string;
-          portada_url?: string;
-          organizacion_nombre?: string;
-        };
-        etapas: EvaluacionEtapa[];
-      };
-    }>
-  > {
-    const res = await apiClient.get('/postulaciones/tracking', {
+  async trackApplication(busqueda: string): Promise<PostulacionTrackingItem[]> {
+    const res = await apiClient.get<PostulacionTrackingItem[]>('/postulaciones/tracking', {
       params: { busqueda },
     });
+    return res.data;
+  },
+
+  async getApplicationStatus(id: number | string): Promise<PostulacionTrackingItem> {
+    const res = await apiClient.get<PostulacionTrackingItem>(`/postulaciones/${id}/estado`);
     return res.data;
   },
 

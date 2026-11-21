@@ -219,14 +219,14 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
     '/postulaciones/tracking': {
       get: {
         tags: ['Postulaciones'],
-        summary: 'Seguimiento del postulante en vivo por CI, nombre o correo',
-        description: 'Permite a los voluntarios consultar en tiempo real el progreso de sus 5 etapas de evaluación mediante búsqueda flexible.',
+        summary: 'Seguimiento del postulante en vivo por CI, nombre, correo o código KIR-ID (KIR-29)',
+        description: 'Permite a los voluntarios consultar en tiempo real el estado visible, porcentaje de avance y detalle de sus 5 etapas de evaluación.',
         parameters: [
-          { name: 'busqueda', in: 'query', required: true, schema: { type: 'string' }, description: 'Cédula de identidad (CI), correo o nombre del postulante' },
+          { name: 'busqueda', in: 'query', required: true, schema: { type: 'string' }, description: 'CI, correo electrónico, nombre o código de seguimiento (ej. KIR-12)' },
         ],
         responses: {
           200: {
-            description: 'Postulaciones encontradas con sus 5 etapas de evaluación.',
+            description: 'Postulaciones encontradas con sus 5 etapas de evaluación y avance visible.',
             content: {
               'application/json': {
                 schema: {
@@ -236,6 +236,7 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
                     properties: {
                       postulante: { $ref: '#/components/schemas/Postulante' },
                       postulacion: { $ref: '#/components/schemas/PostulacionSeguimiento' },
+                      avance: { $ref: '#/components/schemas/AvanceProcesoVisible' },
                     },
                   },
                 },
@@ -243,6 +244,35 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
             },
           },
           400: { description: 'Término de búsqueda no proporcionado.' },
+        },
+      },
+    },
+    '/postulaciones/{id}/estado': {
+      get: {
+        tags: ['Postulaciones'],
+        summary: 'Consultar estado y avance puntual de una postulación (KIR-51 & KIR-53)',
+        description: 'Endpoint optimizado para el seguimiento periódico de una postulación específica por su ID o código KIR-ID.',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'ID numérico o código KIR-ID de la postulación' },
+        ],
+        responses: {
+          200: {
+            description: 'Estado y avance actualizado del proceso.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    postulante: { $ref: '#/components/schemas/Postulante' },
+                    postulacion: { $ref: '#/components/schemas/PostulacionSeguimiento' },
+                    avance: { $ref: '#/components/schemas/AvanceProcesoVisible' },
+                  },
+                },
+              },
+            },
+          },
+          400: { description: 'Identificador inválido.' },
+          404: { description: 'Postulación no encontrada.' },
         },
       },
     },
@@ -588,6 +618,21 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
           evaluador: { type: 'string', example: 'Comité de Admisiones Kirikú' },
           comentarios: { type: 'string', example: 'Recepción de postulación y verificación de requisitos básicos.' },
           fecha_evaluacion: { type: 'string', format: 'date-time' },
+        },
+      },
+      AvanceProcesoVisible: {
+        type: 'object',
+        properties: {
+          porcentaje: { type: 'integer', example: 60 },
+          etapas_totales: { type: 'integer', example: 5 },
+          etapas_aprobadas: { type: 'integer', example: 3 },
+          etapas_en_revision: { type: 'integer', example: 1 },
+          etapas_observadas: { type: 'integer', example: 0 },
+          etapas_rechazadas: { type: 'integer', example: 0 },
+          etapas_pendientes: { type: 'integer', example: 1 },
+          requiere_atencion: { type: 'boolean', example: false },
+          siguiente_paso: { type: 'string', example: 'Actualmente en 4. Evaluación de Competencias.' },
+          ultima_actualizacion: { type: 'string', format: 'date-time', nullable: true },
         },
       },
       PostulacionCompleta: {

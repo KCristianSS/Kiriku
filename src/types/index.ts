@@ -242,6 +242,76 @@ export interface Postulacion {
   etapas?: EvaluacionEtapa[];
 }
 
+// KIR-50: Definición de estados y avance visible del proceso de postulación
+export type ProcesoEstadoVisibleCodigo =
+  | 'en_proceso'
+  | 'observado'
+  | 'aprobado'
+  | 'rechazado'
+  | 'reasignacion';
+
+export type ProcesoSeveridad = 'info' | 'success' | 'warning' | 'danger';
+
+export interface ProcesoEstadoVisible {
+  codigo: ProcesoEstadoVisibleCodigo;
+  etiqueta: string;
+  descripcion: string;
+  severidad: ProcesoSeveridad;
+}
+
+export interface AvanceEtapaActual {
+  codigo: EtapaNombre;
+  nombre: string;
+  orden: number;
+  estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+}
+
+export interface AvanceProcesoVisible {
+  porcentaje: number;
+  etapas_totales: number;
+  etapas_aprobadas: number;
+  etapas_en_revision: number;
+  etapas_observadas: number;
+  etapas_rechazadas: number;
+  etapas_pendientes: number;
+  estado_visible: ProcesoEstadoVisible;
+  etapa_actual: AvanceEtapaActual | null;
+  siguiente_paso: string;
+  requiere_atencion: boolean;
+  ultima_actualizacion: string | null;
+}
+
+export interface EvaluacionEtapaTracking extends EvaluacionEtapa {
+  orden?: number;
+  titulo_etapa?: string;
+  descripcion_etapa?: string;
+}
+
+export interface PostulacionTrackingItem {
+  postulante: Postulante;
+  postulacion: {
+    id: number | string;
+    codigo_seguimiento?: string;
+    estado_general: string;
+    es_reasignacion: boolean;
+    es_reenganche?: boolean;
+    created_at: string;
+    updated_at: string;
+    proyecto: {
+      id: number | string;
+      titulo: string;
+      ubicacion: string;
+      portada_url?: string;
+      organizacion_nombre?: string;
+    };
+    etapas: EvaluacionEtapaTracking[];
+  };
+  avance: AvanceProcesoVisible;
+}
+
 export type DonacionTipo = 'economica' | 'especie';
 
 export interface Donacion {
