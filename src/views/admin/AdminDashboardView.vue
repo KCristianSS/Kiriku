@@ -22,6 +22,7 @@ import {
   LogOut,
   Globe,
   Wrench,
+  HeartPulse,
 } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -30,6 +31,8 @@ async function logout() {
   if (typeof window !== 'undefined') {
     localStorage.removeItem('kiriku_admin_token');
     localStorage.removeItem('kiriku_user_email');
+    localStorage.removeItem('kiriku_user_role');
+    localStorage.removeItem('kiriku_user_permissions');
   }
   try {
     if (supabaseAuth) {
@@ -224,6 +227,26 @@ onMounted(() => {
           </div>
         </div>
         <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#F58F38] group-hover:translate-x-1 transition-all shrink-0" />
+      </router-link>
+
+      <router-link
+        to="/admin/evaluacion-salud"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#EB455F] p-5 shadow-xs transition-all flex items-center justify-between group"
+      >
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-rose-50 text-[#EB455F] rounded-xl flex items-center justify-center shrink-0">
+            <HeartPulse class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-[#EB455F] transition-colors">
+              Evaluación Salud
+            </h3>
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Evaluación física y psicológica con control de acceso RBAC (KIR-28).
+            </p>
+          </div>
+        </div>
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#EB455F] group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
 
       <router-link

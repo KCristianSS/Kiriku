@@ -330,6 +330,57 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
         },
       },
     },
+    '/evaluaciones/salud': {
+      get: {
+        tags: ['Evaluaciones'],
+        summary: 'Listar evaluaciones de salud física y psicológica (KIR-28)',
+        description: 'Requiere token autenticado con permiso applications.read. Permite filtrar por estado, proyecto o búsqueda.',
+        parameters: [
+          { name: 'estado', in: 'query', schema: { type: 'string', enum: ['pendientes', 'aprobado', 'observado', 'rechazado', 'bloqueadas', 'todos'] } },
+          { name: 'proyecto_id', in: 'query', schema: { type: 'integer' } },
+          { name: 'q', in: 'query', schema: { type: 'string' } },
+        ],
+        responses: {
+          200: { description: 'Listado de evaluaciones de salud física y psicológica.' },
+          401: { description: 'No autenticado.' },
+          403: { description: 'Sin permiso applications.read.' },
+        },
+      },
+    },
+    '/evaluaciones/salud/{postulacion_id}': {
+      post: {
+        tags: ['Evaluaciones'],
+        summary: 'Registrar evaluación de salud física y psicológica (KIR-55)',
+        description: 'Requiere token autenticado con permiso applications.manage y etapa previa competencias aprobada.',
+        parameters: [
+          { name: 'postulacion_id', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['estado'],
+                properties: {
+                  estado: { type: 'string', enum: ['aprobado', 'observado', 'rechazado', 'en_revision'] },
+                  evaluador: { type: 'string', example: 'Equipo Médico y Bienestar Kirikú' },
+                  comentarios: { type: 'string', example: 'Certificado médico vigente y valoración psicológica favorable.' },
+                  puntaje_bienestar: { type: 'integer', example: 90 },
+                  nivel_riesgo: { type: 'string', enum: ['bajo', 'moderado', 'alto'] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'Evaluación de salud registrada.' },
+          400: { description: 'Validación fallida o etapa previa no aprobada.' },
+          401: { description: 'No autenticado.' },
+          403: { description: 'Sin permiso applications.manage.' },
+        },
+      },
+    },
     '/postulantes': {
       get: {
         tags: ['Postulantes'],

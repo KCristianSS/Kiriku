@@ -1,6 +1,6 @@
 import express, { Request, Response, Router } from 'express';
 import { query, supabaseAdmin } from './supabase';
-import { authenticate, requirePermission } from './authorization';
+import { authenticate, requirePermission, type AuthenticatedRequest } from './authorization';
 
 const router: Router = express.Router();
 
@@ -60,6 +60,22 @@ router.post('/auth/login', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Contraseña incorrecta. Por favor verifica tus credenciales.' });
     }
 
+    const permRows = await query<{ code: string }>(
+      `SELECT DISTINCT p.code
+       FROM user_roles ur
+       JOIN role_permissions rp ON rp.role_id = ur.role_id
+       JOIN permissions p ON p.id = rp.permission_id
+       JOIN roles r ON r.id = ur.role_id AND r.active = TRUE
+       WHERE ur.user_id = $1
+       UNION
+       SELECT DISTINCT p.code
+       FROM roles r
+       JOIN role_permissions rp ON rp.role_id = r.id
+       JOIN permissions p ON p.id = rp.permission_id
+       WHERE r.code = $2 AND r.active = TRUE`,
+      [user.id, user.rol]
+    );
+
     res.json({
       token: user.id,
       user: {
@@ -67,12 +83,33 @@ router.post('/auth/login', async (req: Request, res: Response) => {
         nombre: user.nombre,
         email: user.email,
         rol: user.rol,
+        permisos: permRows.map((p) => p.code),
       },
       message: 'Inicio de sesión exitoso',
     });
   } catch (err: any) {
     console.error('Error in login:', err);
     res.status(500).json({ error: 'Error al procesar el inicio de sesión' });
+  }
+});
+
+router.get('/auth/me', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userRows = await query<{ id: string; nombre: string; email: string; rol: string }>(
+      'SELECT id, nombre, email, rol FROM public.usuarios WHERE id::text = $1 LIMIT 1',
+      [req.userId]
+    );
+    const u = userRows[0];
+    res.json({
+      userId: req.userId,
+      nombre: u?.nombre || 'Administrador',
+      email: u?.email || '',
+      rol: u?.rol || (req.userId === '00000000-0000-0000-0000-000000000001' ? 'administrador' : 'usuario'),
+      permissions: req.permissions || [],
+    });
+  } catch (err: any) {
+    console.error('Error fetching /auth/me:', err);
+    res.status(500).json({ error: 'Error al obtener perfil y permisos del usuario' });
   }
 });
 
@@ -1768,6 +1805,318 @@ router.post('/evaluaciones/tecnica/:postulacion_id', async (req: Request, res: R
   }
 });
 
+// -------------------------------------------------------------
+// EVALUACIÓN DE SALUD FÍSICA Y PSICOLÓGICA (HISTORIA KIR-28: KIR-54, KIR-55, KIR-56, KIR-57)
+// -------------------------------------------------------------
+
+// KIR-55 & KIR-56: Métricas de la etapa de salud física y psicológica (requiere permiso applications.read)
+router.get(
+  '/evaluaciones/salud/metricas',
+  authenticate,
+  requirePermission('applications.read'),
+  async (_req: Request, res: Response) => {
+    try {
+      const stats = await query<{
+        total: string;
+        disponibles: string;
+        bloqueadas: string;
+        pendientes: string;
+        aprobados: string;
+        observados: string;
+        rechazados: string;
+      }>(`
+        SELECT
+          COUNT(*) as total,
+          COUNT(CASE WHEN ee_comp.estado = 'aprobado' THEN 1 END) as disponibles,
+          COUNT(CASE WHEN COALESCE(ee_comp.estado, 'pendiente') != 'aprobado' AND ee.estado = 'pendiente' THEN 1 END) as bloqueadas,
+          COUNT(CASE WHEN ee_comp.estado = 'aprobado' AND ee.estado IN ('pendiente', 'en_revision', 'en revision') THEN 1 END) as pendientes,
+          COUNT(CASE WHEN ee.estado = 'aprobado' THEN 1 END) as aprobados,
+          COUNT(CASE WHEN ee.estado = 'observado' THEN 1 END) as observados,
+          COUNT(CASE WHEN ee.estado = 'rechazado' THEN 1 END) as rechazados
+        FROM evaluaciones_etapas ee
+        LEFT JOIN evaluaciones_etapas ee_comp ON ee_comp.postulacion_id = ee.postulacion_id AND ee_comp.etapa = 'competencias'
+        WHERE ee.etapa = 'salud_fisica_psicologica'
+      `);
+
+      res.json({
+        total: parseInt(stats[0]?.total || '0', 10),
+        disponibles: parseInt(stats[0]?.disponibles || '0', 10),
+        bloqueadas: parseInt(stats[0]?.bloqueadas || '0', 10),
+        pendientes: parseInt(stats[0]?.pendientes || '0', 10),
+        aprobados: parseInt(stats[0]?.aprobados || '0', 10),
+        observados: parseInt(stats[0]?.observados || '0', 10),
+        rechazados: parseInt(stats[0]?.rechazados || '0', 10),
+      });
+    } catch (err: any) {
+      console.error('Error fetching metricas salud:', err);
+      res.status(500).json({ error: 'Error al consultar métricas de evaluación de salud' });
+    }
+  }
+);
+
+// KIR-54, KIR-55 & KIR-56: Consulta y listado de postulaciones en etapa salud física y psicológica
+router.get(
+  '/evaluaciones/salud',
+  authenticate,
+  requirePermission('applications.read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { estado, proyecto_id, q } = req.query;
+
+      let sql = `
+        SELECT ee.id as etapa_id,
+               ee.postulacion_id,
+               ee.estado as etapa_estado,
+               ee.evaluador,
+               ee.comentarios,
+               ee.fecha_evaluacion,
+               COALESCE(ee_init.estado, 'pendiente') as inicial_estado,
+               COALESCE(ee_tec.estado, 'pendiente') as tecnica_estado,
+               COALESCE(ee_pers.estado, 'pendiente') as personal_estado,
+               COALESCE(ee_comp.estado, 'pendiente') as competencias_estado,
+               app.created_at as postulacion_fecha,
+               app.estado_general as postulacion_estado,
+               p.id as postulante_id,
+               p.nombres,
+               p.apellidos,
+               p.ci,
+               p.email,
+               p.telefono,
+               p.fecha_nacimiento,
+               p.profesion_ocupacion,
+               p.habilidades,
+               p.motivacion,
+               proy.id as proyecto_id,
+               proy.titulo as proyecto_titulo,
+               proy.ubicacion as proyecto_ubicacion,
+               proy.cupos_disponibles as proyecto_cupos,
+               proy.organizacion_id,
+               org.nombre as organizacion_nombre
+        FROM evaluaciones_etapas ee
+        LEFT JOIN evaluaciones_etapas ee_init ON ee_init.postulacion_id = ee.postulacion_id AND ee_init.etapa = 'inicial'
+        LEFT JOIN evaluaciones_etapas ee_tec ON ee_tec.postulacion_id = ee.postulacion_id AND ee_tec.etapa = 'tecnica'
+        LEFT JOIN evaluaciones_etapas ee_pers ON ee_pers.postulacion_id = ee.postulacion_id AND ee_pers.etapa = 'personal'
+        LEFT JOIN evaluaciones_etapas ee_comp ON ee_comp.postulacion_id = ee.postulacion_id AND ee_comp.etapa = 'competencias'
+        JOIN postulaciones app ON app.id = ee.postulacion_id
+        JOIN postulantes p ON p.id = app.postulante_id
+        JOIN proyectos proy ON proy.id = app.proyecto_id
+        LEFT JOIN organizaciones org ON org.id = proy.organizacion_id
+        WHERE ee.etapa = 'salud_fisica_psicologica'
+      `;
+      const params: any[] = [];
+
+      if (estado && typeof estado === 'string') {
+        const normalized = estado.trim().toLowerCase();
+        if (['pendiente', 'pendientes', 'pendiente_revision', 'en_revision', 'en revision', 'en revisión'].includes(normalized)) {
+          sql += ` AND COALESCE(ee_comp.estado, 'pendiente') = 'aprobado' AND ee.estado IN ('pendiente', 'pendiente_revision', 'en_revision', 'en revision', 'en revisión')`;
+        } else if (normalized === 'bloqueadas' || normalized === 'bloqueada') {
+          sql += ` AND COALESCE(ee_comp.estado, 'pendiente') != 'aprobado' AND ee.estado = 'pendiente'`;
+        } else if (normalized !== 'todos') {
+          const estadoMap: Record<string, string> = {
+            aprobados: 'aprobado',
+            observados: 'observado',
+            rechazados: 'rechazado',
+          };
+          params.push(estadoMap[normalized] || normalized);
+          sql += ` AND ee.estado = $${params.length}`;
+        }
+      }
+
+      if (proyecto_id) {
+        params.push(proyecto_id);
+        sql += ` AND proy.id = $${params.length}`;
+      }
+
+      if (q && typeof q === 'string' && q.trim()) {
+        params.push(`%${q.trim()}%`);
+        sql += ` AND (
+          p.nombres ILIKE $${params.length} OR
+          p.apellidos ILIKE $${params.length} OR
+          p.ci ILIKE $${params.length} OR
+          p.email ILIKE $${params.length} OR
+          proy.titulo ILIKE $${params.length} OR
+          COALESCE(org.nombre, '') ILIKE $${params.length}
+        )`;
+      }
+
+      sql += ' ORDER BY ee.id DESC';
+
+      const rows = await query<any>(sql, params);
+
+      const formatted = rows.map((r: any) => {
+        const edad = calculateAge(r.fecha_nacimiento);
+        const puedeEvaluar = r.competencias_estado === 'aprobado';
+        return {
+          etapa_id: r.etapa_id,
+          postulacion_id: r.postulacion_id,
+          etapa_estado: r.etapa_estado === 'en revision' ? 'en_revision' : r.etapa_estado,
+          evaluador: r.evaluador,
+          comentarios: r.comentarios,
+          fecha_evaluacion: r.fecha_evaluacion,
+          postulacion_fecha: r.postulacion_fecha,
+          postulacion_estado: r.postulacion_estado,
+          inicial_estado: r.inicial_estado,
+          tecnica_estado: r.tecnica_estado,
+          personal_estado: r.personal_estado,
+          competencias_estado: r.competencias_estado,
+          puede_evaluar: puedeEvaluar,
+          postulante: {
+            id: r.postulante_id,
+            nombres: r.nombres,
+            apellidos: r.apellidos,
+            ci: r.ci,
+            email: r.email,
+            telefono: r.telefono,
+            fecha_nacimiento: r.fecha_nacimiento,
+            edad,
+            es_mayor_edad: edad >= 18,
+            profesion_ocupacion: r.profesion_ocupacion,
+            habilidades: r.habilidades,
+            motivacion: r.motivacion,
+          },
+          proyecto: {
+            id: r.proyecto_id,
+            titulo: r.proyecto_titulo,
+            ubicacion: r.proyecto_ubicacion,
+            cupos_disponibles: r.proyecto_cupos,
+            organizacion_id: r.organizacion_id,
+            organizacion_nombre: r.organizacion_nombre,
+          },
+        };
+      });
+
+      res.json(formatted);
+    } catch (err: any) {
+      console.error('Error fetching health evaluations:', err);
+      res.status(500).json({ error: 'Error al consultar evaluaciones de salud física y psicológica' });
+    }
+  }
+);
+
+// KIR-55 & KIR-56: Registrar evaluación de salud física y psicológica (requiere permiso applications.manage)
+router.post(
+  '/evaluaciones/salud/:postulacion_id',
+  authenticate,
+  requirePermission('applications.manage'),
+  async (req: Request, res: Response) => {
+    try {
+      const { postulacion_id } = req.params;
+      const { estado, evaluador, comentarios, puntaje_bienestar, nivel_riesgo, criterios } = req.body;
+
+      if (!['aprobado', 'observado', 'rechazado', 'en_revision'].includes(estado)) {
+        return res.status(400).json({ error: 'Estado de evaluación de salud inválido' });
+      }
+
+      if ((estado === 'rechazado' || estado === 'observado') && (!comentarios || comentarios.trim().length < 5)) {
+        return res.status(400).json({
+          error: `Debe detallar el diagnóstico, observación médica o motivo ${estado === 'rechazado' ? 'del rechazo' : 'de la observación'} (mínimo 5 caracteres)`,
+        });
+      }
+
+      // Verificar precondición: etapa previa ('competencias') debe estar aprobada
+      const compRows = await query<{ estado: string }>(
+        `SELECT estado FROM evaluaciones_etapas WHERE postulacion_id = $1 AND etapa = 'competencias'`,
+        [postulacion_id]
+      );
+      if (!compRows.length) {
+        return res.status(404).json({ error: 'No se encontró la postulación o la etapa previa de competencias' });
+      }
+      if (compRows[0].estado !== 'aprobado') {
+        return res.status(400).json({
+          error: 'La etapa previa (Competencias) debe estar aprobada antes de registrar la evaluación de salud física y psicológica',
+        });
+      }
+
+      let observacionesCompletas = comentarios ? comentarios.trim() : '';
+      const detallesSalud: string[] = [];
+
+      if (typeof puntaje_bienestar === 'number' && !isNaN(puntaje_bienestar)) {
+        const score = Math.max(0, Math.min(100, Math.round(puntaje_bienestar)));
+        detallesSalud.push(`Índice de Bienestar: ${score}/100`);
+      }
+
+      if (nivel_riesgo && ['bajo', 'moderado', 'alto'].includes(nivel_riesgo)) {
+        detallesSalud.push(`Riesgo: ${nivel_riesgo.toUpperCase()}`);
+      }
+
+      if (criterios && typeof criterios === 'object') {
+        if (criterios.apto_fisico) detallesSalud.push('Apto Físico: Sí');
+        if (criterios.apto_psicologico) detallesSalud.push('Apto Psicológico: Sí');
+        if (criterios.examen_medico_vigente) detallesSalud.push('Certificado Médico: Vigente');
+        if (criterios.condicion_especifica_atendida) detallesSalud.push('Condiciones Médicas: Compatibles');
+      }
+
+      if (detallesSalud.length > 0) {
+        observacionesCompletas = `[Salud Física y Psicológica: ${detallesSalud.join(' | ')}] ${observacionesCompletas}`.trim();
+      }
+
+      const evaluadorNombre =
+        evaluador && evaluador.trim() ? evaluador.trim() : 'Equipo Médico y Bienestar Kirikú';
+
+      const updatedStage = await query<any>(
+        `UPDATE evaluaciones_etapas
+         SET estado = $1,
+             comentarios = $2,
+             evaluador = $3,
+             fecha_evaluacion = NOW()
+         WHERE postulacion_id = $4 AND etapa = 'salud_fisica_psicologica'
+         RETURNING *`,
+        [
+          estado,
+          observacionesCompletas || 'Evaluación médica y psicológica validada por Equipo de Bienestar',
+          evaluadorNombre,
+          postulacion_id,
+        ]
+      );
+
+      if (!updatedStage.length) {
+        return res.status(404).json({ error: 'No se encontró la etapa de salud física y psicológica para esta postulación' });
+      }
+
+      let estadoGeneralFinal = 'en_proceso';
+      if (estado === 'aprobado') {
+        const allStages = await query<{ estado: string }>(
+          'SELECT estado FROM evaluaciones_etapas WHERE postulacion_id = $1',
+          [postulacion_id]
+        );
+        const allApproved = allStages.length === 5 && allStages.every((s) => s.estado === 'aprobado');
+        estadoGeneralFinal = allApproved ? 'aprobado' : 'en_proceso';
+        await query(
+          `UPDATE postulaciones
+           SET estado_general = $1, updated_at = NOW()
+           WHERE id = $2`,
+          [estadoGeneralFinal, postulacion_id]
+        );
+      } else if (estado === 'rechazado') {
+        estadoGeneralFinal = 'rechazado';
+        await query(
+          `UPDATE postulaciones
+           SET estado_general = 'rechazado', updated_at = NOW()
+           WHERE id = $1`,
+          [postulacion_id]
+        );
+      } else {
+        await query(
+          `UPDATE postulaciones
+           SET estado_general = 'en_proceso', updated_at = NOW()
+           WHERE id = $1`,
+          [postulacion_id]
+        );
+      }
+
+      res.json({
+        message: `Evaluación de salud física y psicológica registrada con éxito (${estado})`,
+        etapa: updatedStage[0],
+        postulacion_id: Number(postulacion_id),
+        estado_general: estadoGeneralFinal,
+      });
+    } catch (err: any) {
+      console.error('Error recording health evaluation:', err);
+      res.status(500).json({ error: 'Error al registrar evaluación de salud física y psicológica' });
+    }
+  }
+);
+
 
 // Calificar etapa de evaluación
 router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
@@ -1795,6 +2144,25 @@ router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
     }
 
     const etapa = rows[0];
+
+    // Desbloquear automáticamente la etapa siguiente en el flujo secuencial
+    if (estado === 'aprobado') {
+      const nextStageMap: Record<string, string> = {
+        inicial: 'tecnica',
+        tecnica: 'personal',
+        personal: 'competencias',
+        competencias: 'salud_fisica_psicologica',
+      };
+      const nextStage = nextStageMap[etapa.etapa];
+      if (nextStage) {
+        await query(
+          `UPDATE evaluaciones_etapas
+           SET estado = 'en_revision', fecha_evaluacion = NOW()
+           WHERE postulacion_id = $1 AND etapa = $2 AND estado = 'pendiente'`,
+          [etapa.postulacion_id, nextStage]
+        );
+      }
+    }
 
     // Verificar si todas las 5 etapas están aprobadas para actualizar automáticamente el estado_general
     const allStages = await query(
