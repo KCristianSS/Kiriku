@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import {
   CheckCircle2,
   Clock,
@@ -18,10 +18,12 @@ import type { EvaluacionEtapa, EtapaNombre, EtapaEstado } from '../types';
 interface Props {
   etapas: EvaluacionEtapa[];
   interactive?: boolean;
+  autoExpandActive?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   interactive: false,
+  autoExpandActive: false,
 });
 
 const emit = defineEmits<{
@@ -94,12 +96,34 @@ function getStageMeta(etapa: EtapaNombre) {
 function normalizeState(estado: any): string {
   if (!estado) return 'pendiente';
   const s = String(estado).trim().toLowerCase();
-  if (s === 'aprobada') return 'aprobado';
-  if (s === 'rechazada') return 'rechazado';
-  if (s === 'observada') return 'observado';
-  if (s === 'en revision' || s === 'en_revisión' || s === 'en_revision') return 'en_revision';
+  if (s === 'aprobada' || s === 'aprobado') return 'aprobado';
+  if (s === 'rechazada' || s === 'rechazado') return 'rechazado';
+  if (s === 'observada' || s === 'observado') return 'observado';
+  if (s === 'en revision' || s === 'en revisión' || s === 'en_revisión' || s === 'en_revision' || s === 'en_curso') return 'en_revision';
   return s;
 }
+
+function getActiveStageId(list: EvaluacionEtapa[]): string | null {
+  if (!list || !list.length) return null;
+  const target =
+    list.find((s) => normalizeState(s.estado) === 'rechazado') ||
+    list.find((s) => normalizeState(s.estado) === 'observado') ||
+    list.find((s) => normalizeState(s.estado) === 'en_revision');
+  return target ? String(target.id) : null;
+}
+
+watch(
+  () => props.etapas,
+  (list) => {
+    if (props.autoExpandActive && !expandedStage.value) {
+      const activeId = getActiveStageId(list);
+      if (activeId) {
+        expandedStage.value = activeId;
+      }
+    }
+  },
+  { immediate: true, deep: true }
+);
 
 function getStatusBadge(estado: any) {
   const norm = normalizeState(estado);
@@ -137,8 +161,9 @@ function getStatusBadge(estado: any) {
   }
 }
 
-function toggleExpand(id: string) {
-  expandedStage.value = expandedStage.value === id ? null : id;
+function toggleExpand(id: string | number) {
+  const key = String(id);
+  expandedStage.value = expandedStage.value === key ? null : key;
 }
 
 function openEdit(stage: EvaluacionEtapa) {
@@ -250,9 +275,23 @@ function saveEdit() {
               {{ idx + 1 }}
             </div>
             <div>
-              <h4 class="text-sm font-bold text-stone-900 leading-tight">
-                {{ getStageMeta(stage.etapa).label }}
-              </h4>
+              <div class="flex items-center gap-2 flex-wrap">
+                <h4 class="text-sm font-bold text-stone-900 leading-tight">
+                  {{ getStageMeta(stage.etapa).label }}
+                </h4>
+                <span
+                  v-if="normalizeState(stage.estado) === 'en_revision'"
+                  class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-100 text-blue-800"
+                >
+                  Etapa actual
+                </span>
+                <span
+                  v-else-if="normalizeState(stage.estado) === 'observado'"
+                  class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-100 text-amber-800"
+                >
+                  Requiere atención
+                </span>
+              </div>
               <p class="text-xs text-stone-500 line-clamp-1">
                 {{ getStageMeta(stage.etapa).description }}
               </p>
@@ -270,14 +309,14 @@ function saveEdit() {
               {{ getStatusBadge(stage.estado).text }}
             </span>
             <component
-              :is="expandedStage === stage.id ? ChevronUp : ChevronDown"
+              :is="expandedStage === String(stage.id) ? ChevronUp : ChevronDown"
               class="w-4 h-4 text-stone-400"
             />
           </div>
         </div>
 
         <!-- Expanded Detail Area -->
-        <div v-if="expandedStage === stage.id" class="px-4 pb-4 pt-1 bg-stone-50 border-t border-stone-100 text-xs space-y-2">
+        <div v-if="expandedStage === String(stage.id)" class="px-4 pb-4 pt-1 bg-stone-50 border-t border-stone-100 text-xs space-y-2">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
             <div>
               <span class="text-stone-400 block font-medium">Evaluador asignado:</span>
