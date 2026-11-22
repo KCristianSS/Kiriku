@@ -12,16 +12,25 @@ import type {
   EvaluacionInicialItem,
   RegistrarEvaluacionInicialPayload,
   EvaluacionTecnicaItem,
+  EvaluacionCompetenciasItem,
+  RegistrarEvaluacionCompetenciasPayload,
+  EvaluacionPersonalItem,
+  RegistrarEvaluacionPersonalPayload,
   RegistrarEvaluacionTecnicaPayload,
   EvaluacionSaludItem,
   RegistrarEvaluacionSaludPayload,
   Donacion,
+  Donante,
+  Receptor,
+  DonacionTrazabilidad,
   CreatePostulantePayload,
   PostulacionRegistroResponse,
   ValidarEdadPayload,
   ValidarEdadResponse,
   ProposeProjectPayload,
   CreateDonationPayload,
+  RegisterDeliveryPayload,
+  UpdateDeliveryStatusPayload,
   DashboardMetrics,
 } from '../types';
 
@@ -304,6 +313,42 @@ export const api = {
     return res.data;
   },
 
+  // KIR-59: Gestión de la evaluación por competencias.
+  async getCompetencyEvaluations(params?: {
+    estado?: string;
+    proyecto_id?: number | string;
+    q?: string;
+  }): Promise<EvaluacionCompetenciasItem[]> {
+    const res = await apiClient.get<EvaluacionCompetenciasItem[]>('/evaluaciones/competencias', { params });
+    return res.data;
+  },
+
+  async submitCompetencyEvaluation(
+    postulacionId: number | string,
+    payload: RegistrarEvaluacionCompetenciasPayload
+  ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
+    const res = await apiClient.post(`/evaluaciones/competencias/${postulacionId}`, payload);
+    return res.data;
+  },
+
+  // KIR-63: Gestión de la entrevista personal.
+  async getPersonalEvaluations(params?: {
+    estado?: string;
+    proyecto_id?: number | string;
+    q?: string;
+  }): Promise<EvaluacionPersonalItem[]> {
+    const res = await apiClient.get<EvaluacionPersonalItem[]>('/evaluaciones/personal', { params });
+    return res.data;
+  },
+
+  async submitPersonalEvaluation(
+    postulacionId: number | string,
+    payload: RegistrarEvaluacionPersonalPayload
+  ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
+    const res = await apiClient.post(`/evaluaciones/personal/${postulacionId}`, payload);
+    return res.data;
+  },
+
   // KIR-28: Gestión de Evaluación de Salud Física y Psicológica (KIR-55 & KIR-56)
   async getHealthEvaluations(params?: {
     estado?: string;
@@ -378,14 +423,58 @@ export const api = {
     return res.data;
   },
 
-  // Donaciones
-  async getDonaciones(): Promise<Donacion[]> {
-    const res = await apiClient.get<Donacion[]>('/donaciones');
+  // Donaciones y Trazabilidad (KIR-32)
+  async getDonaciones(params?: {
+    q?: string;
+    tipo?: string;
+    estado_entrega?: string;
+  }): Promise<Donacion[]> {
+    const res = await apiClient.get<Donacion[]>('/donaciones', { params });
     return res.data;
   },
 
   async createDonacion(payload: CreateDonationPayload): Promise<Donacion> {
     const res = await apiClient.post<Donacion>('/donaciones', payload);
+    return res.data;
+  },
+
+  async getDonantes(): Promise<Donante[]> {
+    const res = await apiClient.get<Donante[]>('/donaciones/donantes');
+    return res.data;
+  },
+
+  async getReceptores(): Promise<Receptor[]> {
+    const res = await apiClient.get<Receptor[]>('/donaciones/receptores');
+    return res.data;
+  },
+
+  async getDonationTraceability(id: number | string): Promise<DonacionTrazabilidad> {
+    const res = await apiClient.get<DonacionTrazabilidad>(`/donaciones/${id}/trazabilidad`);
+    return res.data;
+  },
+
+  async registerDonationDelivery(
+    donacionId: number | string,
+    payload: RegisterDeliveryPayload
+  ): Promise<{
+    message: string;
+    entrega: any;
+    donacion_estado_entrega: string;
+    saldo_disponible_bob: number;
+  }> {
+    const res = await apiClient.post(`/donaciones/${donacionId}/entregas`, payload);
+    return res.data;
+  },
+
+  async updateDeliveryStatus(
+    entregaId: number | string,
+    payload: UpdateDeliveryStatusPayload
+  ): Promise<{
+    message: string;
+    entrega: any;
+    donacion_estado_entrega: string;
+  }> {
+    const res = await apiClient.patch(`/donaciones/entregas/${entregaId}`, payload);
     return res.data;
   },
 
