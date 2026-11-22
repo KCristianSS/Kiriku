@@ -65,7 +65,9 @@ export const useProjectsStore = defineStore('projects', () => {
     try {
       organizations.value = await api.getOrganizaciones();
     } catch (err: any) {
-      console.error('Error fetching organizations:', err);
+      if (err?.response?.status !== 503 && !error.value) {
+        error.value = err?.response?.data?.error || 'Error al obtener organizaciones';
+      }
     }
   }
 
