@@ -4,6 +4,7 @@ import type {
   Proyecto,
   Organizacion,
   Postulacion,
+  PostulacionTrackingItem,
   Postulante,
   PostulanteBancoItem,
   PostulanteMetricasResumen,
@@ -16,6 +17,8 @@ import type {
   EvaluacionPersonalItem,
   RegistrarEvaluacionPersonalPayload,
   RegistrarEvaluacionTecnicaPayload,
+  EvaluacionSaludItem,
+  RegistrarEvaluacionSaludPayload,
   Donacion,
   CreatePostulantePayload,
   PostulacionRegistroResponse,
@@ -57,6 +60,11 @@ export const api = {
   // Autenticación Administrativa
   async login(payload: { email: string; password: string }): Promise<{ token: string; user: any; message: string }> {
     const res = await apiClient.post('/auth/login', payload);
+    return res.data;
+  },
+
+  async getMe(): Promise<{ userId: string; rol: string; nombre: string; email: string; permissions: string[] }> {
+    const res = await apiClient.get('/auth/me');
     return res.data;
   },
 
@@ -189,30 +197,15 @@ export const api = {
     return res.data;
   },
 
-  async trackApplication(busqueda: string): Promise<
-    Array<{
-      postulante: Postulante;
-      postulacion: {
-        id: number | string;
-        estado_general: string;
-        es_reasignacion: boolean;
-        es_reenganche?: boolean;
-        created_at: string;
-        updated_at: string;
-        proyecto: {
-          id: number | string;
-          titulo: string;
-          ubicacion: string;
-          portada_url?: string;
-          organizacion_nombre?: string;
-        };
-        etapas: EvaluacionEtapa[];
-      };
-    }>
-  > {
-    const res = await apiClient.get('/postulaciones/tracking', {
+  async trackApplication(busqueda: string): Promise<PostulacionTrackingItem[]> {
+    const res = await apiClient.get<PostulacionTrackingItem[]>('/postulaciones/tracking', {
       params: { busqueda },
     });
+    return res.data;
+  },
+
+  async getApplicationStatus(id: number | string): Promise<PostulacionTrackingItem> {
+    const res = await apiClient.get<PostulacionTrackingItem>(`/postulaciones/${id}/estado`);
     return res.data;
   },
 
@@ -348,6 +341,34 @@ export const api = {
     payload: RegistrarEvaluacionPersonalPayload
   ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
     const res = await apiClient.post(`/evaluaciones/personal/${postulacionId}`, payload);
+  // KIR-28: Gestión de Evaluación de Salud Física y Psicológica (KIR-55 & KIR-56)
+  async getHealthEvaluations(params?: {
+    estado?: string;
+    proyecto_id?: number | string;
+    q?: string;
+  }): Promise<EvaluacionSaludItem[]> {
+    const res = await apiClient.get<EvaluacionSaludItem[]>('/evaluaciones/salud', { params });
+    return res.data;
+  },
+
+  async getHealthEvaluationsMetrics(): Promise<{
+    total: number;
+    disponibles: number;
+    bloqueadas: number;
+    pendientes: number;
+    aprobados: number;
+    observados: number;
+    rechazados: number;
+  }> {
+    const res = await apiClient.get('/evaluaciones/salud/metricas');
+    return res.data;
+  },
+
+  async submitHealthEvaluation(
+    postulacionId: number | string,
+    payload: RegistrarEvaluacionSaludPayload
+  ): Promise<any> {
+    const res = await apiClient.post(`/evaluaciones/salud/${postulacionId}`, payload);
     return res.data;
   },
 

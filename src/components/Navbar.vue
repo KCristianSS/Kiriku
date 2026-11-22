@@ -55,7 +55,7 @@ function navigate(path: string) {
             @click="navigate(item.path)"
             :class="[
               'px-3.5 py-1.5 rounded-full text-xs sm:text-sm font-semibold transition-all cursor-pointer whitespace-nowrap',
-              route.path === item.path || (item.path !== '/' && route.path.startsWith(item.path))
+              route.path === item.path || (item.path !== '/' && route.path.startsWith(item.path + '/'))
                 ? 'bg-[#289EAB] text-white shadow-xs'
                 : 'text-stone-700 hover:text-[#1E7B85] hover:bg-[#E8F6F8]'
             ]"
