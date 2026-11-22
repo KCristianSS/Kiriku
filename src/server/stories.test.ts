@@ -9,6 +9,12 @@ import apiRouter, {
   normalizeEtapaEstado,
 } from './api';
 import { hasPermission } from './permissions';
+import {
+  calculateDonationBalance,
+  canTransitionDeliveryState,
+  deriveDonationDeliveryStatus,
+  validateDeliveryRegistration,
+} from './donation-traceability';
 import { query, dbPool } from './supabase';
 
 describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
@@ -1202,6 +1208,264 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
   });
 
   // ============================================================================
+  // KIR-26: Gestionar evaluación personal (KIR-62, KIR-63, KIR-64, KIR-65)
+  // ============================================================================
+  describe('KIR-26: Gestionar evaluación personal', () => {
+    it('KIR-62 & KIR-63 & KIR-65: Estructura JSONB, precondición técnica, cálculo de promedio y desbloqueo de competencias vía HTTP y BD', async () => {
+      const cols = await query<{ column_name: string; data_type: string }>(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'evaluaciones_etapas'
+           AND column_name = 'detalle_criterios_personales'`
+      );
+      assert.equal(cols.length, 1, 'La columna detalle_criterios_personales debe existir en evaluaciones_etapas');
+      assert.equal(cols[0].data_type, 'jsonb', 'detalle_criterios_personales debe ser JSONB');
+
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      let postulanteId = 0;
+      let postulacionId = 0;
+
+      try {
+        const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+        assert.ok(proy.length > 0, 'Debe existir un proyecto aprobado');
+
+        const postInsert = await query<{ id: number }>(
+          `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion)
+           VALUES ($1, 'Sofía', 'PersonalTest', '1999-05-20', $2, 'Psicóloga Social')
+           RETURNING id`,
+          [`TEST-PERS-${stamp}`, `personal.test.${stamp}@kiriku.test`]
+        );
+        postulanteId = postInsert[0].id;
+
+        const appInsert = await query<{ id: number }>(
+          `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general)
+           VALUES ($1, $2, 'en_proceso')
+           RETURNING id`,
+          [postulanteId, proy[0].id]
+        );
+        postulacionId = appInsert[0].id;
+
+        await query(
+          `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador, comentarios)
+           VALUES
+             ($1, 'inicial', 'aprobado', 'Comité Admisiones', 'OK'),
+             ($1, 'tecnica', 'en_revision', 'Socio Territorial', 'Pendiente'),
+             ($1, 'personal', 'pendiente', 'Psicología Kirikú', 'Esperando técnica'),
+             ($1, 'competencias', 'pendiente', 'Facilitador Grupal', 'Esperando personal'),
+             ($1, 'salud_fisica_psicologica', 'pendiente', 'Equipo Médico', 'Esperando competencias')`,
+          [postulacionId]
+        );
+
+        const validCriterios = {
+          motivacion_servicio: 5,
+          compromiso_responsabilidad: 4,
+          comunicacion_interpersonal: 4,
+          disponibilidad: 5,
+          madurez_autocuidado: 4,
+        };
+
+        // 1. Sin etapa técnica aprobada debe devolver 400
+        const blockedRes = await fetch(`${baseUrl}/evaluaciones/personal/${postulacionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            estado: 'aprobado',
+            evaluador: 'Entrevistador UCB',
+            comentarios: 'Intento prematuro',
+            criterios: validCriterios,
+          }),
+        });
+        assert.equal(blockedRes.status, 400, 'No debe registrar entrevista personal si técnica no está aprobada');
+
+        // 2. Aprobar técnica y consultar lista personal
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'aprobado' WHERE postulacion_id = $1 AND etapa = 'tecnica'`,
+          [postulacionId]
+        );
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'en_revision' WHERE postulacion_id = $1 AND etapa = 'personal'`,
+          [postulacionId]
+        );
+
+        const listRes = await fetch(`${baseUrl}/evaluaciones/personal?q=${encodeURIComponent(`TEST-PERS-${stamp}`)}`);
+        assert.equal(listRes.status, 200);
+        const listJson = (await listRes.json()) as any[];
+        assert.equal(listJson.length, 1);
+        assert.equal(listJson[0].puede_evaluar, true);
+
+        // 3. Registrar entrevista personal aprobada -> guarda JSONB, promedio 4.4 y desbloquea competencias
+        const saveRes = await fetch(`${baseUrl}/evaluaciones/personal/${postulacionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            estado: 'aprobado',
+            evaluador: 'Lic. Andrea Morales',
+            comentarios: 'Excelente vocación y compromiso con las actividades del proyecto.',
+            criterios: validCriterios,
+          }),
+        });
+        assert.equal(saveRes.status, 200);
+        const saveJson = (await saveRes.json()) as any;
+        assert.equal(saveJson.puntaje_promedio, 4.4);
+        assert.equal(saveJson.estado_general, 'en_proceso');
+
+        const compStage = await query<{ estado: string }>(
+          `SELECT estado FROM evaluaciones_etapas WHERE postulacion_id = $1 AND etapa = 'competencias'`,
+          [postulacionId]
+        );
+        assert.equal(compStage[0]?.estado, 'en_revision', 'Aprobar entrevista personal debe desbloquear competencias');
+      } finally {
+        server.close();
+        if (postulacionId) {
+          await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+          await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+        }
+        if (postulanteId) {
+          await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+        }
+      }
+    });
+  });
+
+  // ============================================================================
+  // KIR-27: Gestionar evaluación por competencias (KIR-58, KIR-59, KIR-60, KIR-61)
+  // ============================================================================
+  describe('KIR-27: Gestionar evaluación por competencias', () => {
+    it('KIR-58 & KIR-59 & KIR-61: Estructura JSONB, precondiciones técnica+personal y desbloqueo de salud vía HTTP y BD', async () => {
+      const cols = await query<{ column_name: string; data_type: string }>(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'evaluaciones_etapas'
+           AND column_name = 'detalle_criterios'`
+      );
+      assert.equal(cols.length, 1, 'La columna detalle_criterios debe existir en evaluaciones_etapas');
+      assert.equal(cols[0].data_type, 'jsonb', 'detalle_criterios debe ser JSONB');
+
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      let postulanteId = 0;
+      let postulacionId = 0;
+
+      try {
+        const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+        assert.ok(proy.length > 0, 'Debe existir un proyecto aprobado');
+
+        const postInsert = await query<{ id: number }>(
+          `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion)
+           VALUES ($1, 'Gabriel', 'CompTest', '1998-03-14', $2, 'Facilitador Comunitario')
+           RETURNING id`,
+          [`TEST-COMP-${stamp}`, `comp.test.${stamp}@kiriku.test`]
+        );
+        postulanteId = postInsert[0].id;
+
+        const appInsert = await query<{ id: number }>(
+          `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general)
+           VALUES ($1, $2, 'en_proceso')
+           RETURNING id`,
+          [postulanteId, proy[0].id]
+        );
+        postulacionId = appInsert[0].id;
+
+        await query(
+          `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador, comentarios)
+           VALUES
+             ($1, 'inicial', 'aprobado', 'Comité Admisiones', 'OK'),
+             ($1, 'tecnica', 'aprobado', 'Socio Territorial', 'OK'),
+             ($1, 'personal', 'en_revision', 'Psicología Kirikú', 'Pendiente'),
+             ($1, 'competencias', 'pendiente', 'Facilitador Grupal', 'Esperando personal'),
+             ($1, 'salud_fisica_psicologica', 'pendiente', 'Equipo Médico', 'Esperando competencias')`,
+          [postulacionId]
+        );
+
+        const validCriterios = {
+          trabajo_equipo: 5,
+          comunicacion: 4,
+          liderazgo: 5,
+          resolucion_problemas: 4,
+          empatia_adaptabilidad: 5,
+        };
+
+        // 1. Sin personal aprobado debe devolver 400
+        const blockedRes = await fetch(`${baseUrl}/evaluaciones/competencias/${postulacionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            estado: 'aprobado',
+            evaluador: 'Facilitador UCB',
+            comentarios: 'Intento prematuro',
+            criterios: validCriterios,
+          }),
+        });
+        assert.equal(blockedRes.status, 400, 'No debe registrar competencias sin etapa personal aprobada');
+
+        // 2. Aprobar personal y consultar lista competencias
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'aprobado' WHERE postulacion_id = $1 AND etapa = 'personal'`,
+          [postulacionId]
+        );
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'en_revision' WHERE postulacion_id = $1 AND etapa = 'competencias'`,
+          [postulacionId]
+        );
+
+        const listRes = await fetch(`${baseUrl}/evaluaciones/competencias?q=${encodeURIComponent(`TEST-COMP-${stamp}`)}`);
+        assert.equal(listRes.status, 200);
+        const listJson = (await listRes.json()) as any[];
+        assert.equal(listJson.length, 1);
+        assert.equal(listJson[0].puede_evaluar, true);
+
+        // 3. Registrar competencias aprobada -> guarda JSONB, promedio 4.6 y desbloquea salud_fisica_psicologica
+        const saveRes = await fetch(`${baseUrl}/evaluaciones/competencias/${postulacionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            estado: 'aprobado',
+            evaluador: 'Facilitador Grupal Kirikú',
+            comentarios: 'Destaca en liderazgo colaborativo y resolución de problemas.',
+            criterios: validCriterios,
+          }),
+        });
+        assert.equal(saveRes.status, 200);
+        const saveJson = (await saveRes.json()) as any;
+        assert.equal(saveJson.puntaje_promedio, 4.6);
+        assert.equal(saveJson.estado_general, 'en_proceso');
+
+        const healthStage = await query<{ estado: string }>(
+          `SELECT estado FROM evaluaciones_etapas WHERE postulacion_id = $1 AND etapa = 'salud_fisica_psicologica'`,
+          [postulacionId]
+        );
+        assert.equal(healthStage[0]?.estado, 'en_revision', 'Aprobar competencias debe desbloquear salud física y psicológica');
+      } finally {
+        server.close();
+        if (postulacionId) {
+          await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+          await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+        }
+        if (postulanteId) {
+          await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+        }
+      }
+    });
+  });
+
+  // ============================================================================
   // KIR-28: Gestionar evaluación de salud física y psicológica (KIR-54, KIR-55, KIR-56, KIR-57)
   // ============================================================================
   describe('KIR-28: Gestionar evaluación de salud física y psicológica', () => {
@@ -1616,7 +1880,292 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
       }
     });
   });
+
+  // ============================================================================
+  // KIR-32: Registrar entrega y vínculo entre donante y receptor (KIR-38..KIR-41)
+  // ============================================================================
+  describe('KIR-32: Registrar entrega y vínculo entre donante y receptor', () => {
+    it('KIR-38: Estructura relacional donante-donación-receptor y llaves foráneas en Supabase', async () => {
+      const tables = await query<{ table_name: string }>(
+        `SELECT table_name FROM information_schema.tables
+         WHERE table_schema = 'public'
+           AND table_name IN ('donantes', 'receptores', 'donaciones', 'entregas_donaciones')`
+      );
+      const tableNames = tables.map((t) => t.table_name);
+      assert.ok(tableNames.includes('donantes'), 'Debe existir la tabla donantes');
+      assert.ok(tableNames.includes('receptores'), 'Debe existir la tabla receptores');
+      assert.ok(tableNames.includes('donaciones'), 'Debe existir la tabla donaciones');
+      assert.ok(tableNames.includes('entregas_donaciones'), 'Debe existir la tabla entregas_donaciones');
+
+      const donCols = await query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'donaciones'
+           AND column_name IN ('donante_id', 'codigo_donacion', 'estado_entrega', 'donante_tipo')`
+      );
+      assert.equal(donCols.length, 4, 'donaciones debe contar con columnas de trazabilidad y vínculo a donantes');
+
+      const fks = await query<{ table_name: string; column_name: string; foreign_table: string }>(
+        `SELECT tc.table_name, kcu.column_name, ccu.table_name AS foreign_table
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+         JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name
+         WHERE tc.constraint_type = 'FOREIGN KEY'
+           AND tc.table_name IN ('donaciones', 'entregas_donaciones')`
+      );
+      const hasDonanteFk = fks.some(
+        (f) => f.table_name === 'donaciones' && f.column_name === 'donante_id' && f.foreign_table === 'donantes'
+      );
+      const hasEntregaDonacionFk = fks.some(
+        (f) => f.table_name === 'entregas_donaciones' && f.column_name === 'donacion_id' && f.foreign_table === 'donaciones'
+      );
+      const hasEntregaReceptorFk = fks.some(
+        (f) => f.table_name === 'entregas_donaciones' && f.column_name === 'receptor_id' && f.foreign_table === 'receptores'
+      );
+      assert.ok(hasDonanteFk, 'donaciones.donante_id debe referenciar a donantes');
+      assert.ok(hasEntregaDonacionFk, 'entregas_donaciones.donacion_id debe referenciar a donaciones');
+      assert.ok(hasEntregaReceptorFk, 'entregas_donaciones.receptor_id debe referenciar a receptores');
+    });
+
+    it('KIR-39: Validación de reglas de negocio de entregas, saldos y transiciones de estado', () => {
+      // Validación de monto superior al saldo disponible
+      const overBudget = validateDeliveryRegistration(
+        { tipo_donacion: 'economica', monto_bob: 1000 },
+        [{ estado: 'entregada', monto_entregado_bob: 600 }],
+        {
+          receptor_nombre: 'Comunidad Norte',
+          responsable_entrega: 'Equipo Kirikú',
+          recibido_por_receptor: 'Ana Quispe',
+          monto_entregado_bob: 500,
+        }
+      );
+      assert.equal(overBudget.ok, false, 'Debe rechazar montos superiores al saldo disponible (400 Bs.)');
+
+      // Cálculo de saldo y estado parcial vs completado
+      const bal = calculateDonationBalance('economica', 1000, [
+        { estado: 'entregada', monto_entregado_bob: 600 },
+      ]);
+      assert.equal(bal.monto_entregado_bob, 600);
+      assert.equal(bal.saldo_disponible_bob, 400);
+      assert.equal(
+        deriveDonationDeliveryStatus('economica', 1000, [
+          { estado: 'entregada', monto_entregado_bob: 600 },
+        ]),
+        'entrega_parcial'
+      );
+      assert.equal(
+        deriveDonationDeliveryStatus('economica', 1000, [
+          { estado: 'entregada', monto_entregado_bob: 600 },
+          { estado: 'verificada', monto_entregado_bob: 400 },
+        ]),
+        'entregada'
+      );
+
+      // Transiciones de estado válidas vs retrocesos inválidos
+      assert.equal(canTransitionDeliveryState('programada', 'en_camino'), true);
+      assert.equal(canTransitionDeliveryState('en_camino', 'entregada'), true);
+      assert.equal(canTransitionDeliveryState('entregada', 'verificada'), true);
+      assert.equal(canTransitionDeliveryState('verificada', 'programada'), false);
+      assert.equal(canTransitionDeliveryState('entregada', 'en_camino'), false);
+    });
+
+    it('KIR-41: Pruebas reales HTTP + BD de trazabilidad Donante → Donación → Entregas → Receptor (económica y especie)', async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      const createdDonationIds: number[] = [];
+      const createdDonorIds: number[] = [];
+      const createdRecipientIds: number[] = [];
+
+      try {
+        const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+        assert.ok(proy.length > 0, 'Debe existir un proyecto aprobado');
+
+        // 1. Registrar donación económica vía HTTP -> crea donante + código KIR-DON
+        const createEconRes = await fetch(`${baseUrl}/donaciones`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            donante_nombre: `Empresa Solidaria ${stamp}`,
+            donante_tipo: 'empresa',
+            donante_documento: `NIT-${stamp}`,
+            donante_email: `rse.${stamp}@kiriku.test`,
+            donante_telefono: '+591 71112233',
+            tipo_donacion: 'economica',
+            monto_bob: 1500,
+            proyecto_destino_id: proy[0].id,
+            recibido_por: 'Carlos Tesorería Kirikú',
+          }),
+        });
+        assert.equal(createEconRes.status, 201);
+        const econDonation = (await createEconRes.json()) as any;
+        createdDonationIds.push(econDonation.id);
+        if (econDonation.donante_id) createdDonorIds.push(econDonation.donante_id);
+
+        assert.equal(econDonation.codigo_donacion, `KIR-DON-${econDonation.id}`);
+        assert.equal(econDonation.estado_entrega, 'recibida');
+        assert.equal(econDonation.saldo_disponible_bob, 1500);
+
+        // 2. Intentar entregar más del monto donado -> 400
+        const invalidDelRes = await fetch(`${baseUrl}/donaciones/${econDonation.id}/entregas`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receptor_nombre: `Comunidad Prueba ${stamp}`,
+            receptor_tipo: 'comunidad',
+            monto_entregado_bob: 2000,
+            responsable_entrega: 'Coordinador Logística',
+            recibido_por_receptor: 'Elena Mamani',
+          }),
+        });
+        assert.equal(invalidDelRes.status, 400, 'No debe permitir entregar un monto superior al total donado');
+
+        // 3. Registrar primera entrega parcial (900 Bs.) vinculada a nuevo receptor -> estado 'entrega_parcial'
+        const del1Res = await fetch(`${baseUrl}/donaciones/${econDonation.id}/entregas`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receptor_nombre: `Centro Comunitario Villa Esperanza ${stamp}`,
+            receptor_tipo: 'comunidad',
+            receptor_ubicacion: 'El Alto, Distrito 6',
+            proyecto_id: proy[0].id,
+            estado: 'entregada',
+            monto_entregado_bob: 900,
+            responsable_entrega: 'Lucía Logística Kirikú',
+            recibido_por_receptor: 'Elena Mamani (Dirigente Vecinal)',
+            observaciones: 'Primer desembolso para materiales de reforestación',
+          }),
+        });
+        assert.equal(del1Res.status, 201);
+        const del1Json = (await del1Res.json()) as any;
+        if (del1Json.entrega?.receptor_id) createdRecipientIds.push(del1Json.entrega.receptor_id);
+
+        assert.equal(del1Json.donacion_estado_entrega, 'entrega_parcial');
+        assert.equal(del1Json.saldo_disponible_bob, 600);
+        assert.match(del1Json.entrega.codigo_entrega, /^KIR-ENT-\d+$/);
+
+        // 4. Registrar segunda entrega (600 Bs.) en estado 'programada' y avanzar hasta 'verificada'
+        const del2Res = await fetch(`${baseUrl}/donaciones/${econDonation.id}/entregas`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receptor_id: del1Json.entrega.receptor_id,
+            estado: 'programada',
+            monto_entregado_bob: 600,
+            responsable_entrega: 'Lucía Logística Kirikú',
+            recibido_por_receptor: 'Elena Mamani (Dirigente Vecinal)',
+            observaciones: 'Segundo desembolso de cierre',
+          }),
+        });
+        assert.equal(del2Res.status, 201);
+        const del2Json = (await del2Res.json()) as any;
+        const del2Id = del2Json.entrega.id;
+        assert.equal(del2Json.saldo_disponible_bob, 0);
+
+        // Avanzar estado de entrega 2 a 'verificada' -> donación padre pasa a 'entregada'
+        const patchRes = await fetch(`${baseUrl}/donaciones/entregas/${del2Id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            estado: 'verificada',
+            observaciones: 'Acta firmada y verificada por auditoría',
+          }),
+        });
+        assert.equal(patchRes.status, 200);
+        const patchJson = (await patchRes.json()) as any;
+        assert.equal(patchJson.entrega.estado, 'verificada');
+        assert.equal(patchJson.donacion_estado_entrega, 'entregada');
+
+        // Intentar retroceder una entrega verificada -> 400
+        const backwardRes = await fetch(`${baseUrl}/donaciones/entregas/${del2Id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ estado: 'programada' }),
+        });
+        assert.equal(backwardRes.status, 400, 'No debe permitir retroceder una entrega verificada');
+
+        // 5. Consultar endpoint de trazabilidad completo y verificar cadena Donante -> Donación -> Entregas -> Receptor
+        const traceRes = await fetch(`${baseUrl}/donaciones/${econDonation.id}/trazabilidad`);
+        assert.equal(traceRes.status, 200);
+        const trace = (await traceRes.json()) as any;
+
+        assert.equal(trace.donante.nombre, `Empresa Solidaria ${stamp}`);
+        assert.equal(trace.donacion.id, econDonation.id);
+        assert.equal(trace.entregas.length, 2);
+        assert.equal(trace.resumen.estado_entrega, 'entregada');
+        assert.equal(trace.resumen.monto_total_bob, 1500);
+        assert.equal(trace.resumen.monto_entregado_bob, 1500);
+        assert.equal(trace.resumen.saldo_disponible_bob, 0);
+        assert.equal(trace.resumen.receptores_vinculados, 1);
+
+        // 6. Probar donación en especie + búsqueda filtrada por receptor
+        const createEspRes = await fetch(`${baseUrl}/donaciones`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            donante_nombre: `Familia Rojas ${stamp}`,
+            donante_tipo: 'persona',
+            tipo_donacion: 'especie',
+            descripcion_especie: '30 kits de abrigo infantil',
+            recibido_por: 'Recepción Kirikú',
+          }),
+        });
+        assert.equal(createEspRes.status, 201);
+        const espDonation = (await createEspRes.json()) as any;
+        createdDonationIds.push(espDonation.id);
+        if (espDonation.donante_id) createdDonorIds.push(espDonation.donante_id);
+
+        const delEspRes = await fetch(`${baseUrl}/donaciones/${espDonation.id}/entregas`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receptor_nombre: `Albergue Municipal Sur ${stamp}`,
+            receptor_tipo: 'organizacion',
+            receptor_ubicacion: 'La Paz, Zona Sur',
+            estado: 'entregada',
+            detalle_bienes_entregados: '30 kits de abrigo infantil entregados completos',
+            responsable_entrega: 'Brigada Kirikú',
+            recibido_por_receptor: 'Marco Paredes (Director)',
+          }),
+        });
+        assert.equal(delEspRes.status, 201);
+        const delEspJson = (await delEspRes.json()) as any;
+        if (delEspJson.entrega?.receptor_id) createdRecipientIds.push(delEspJson.entrega.receptor_id);
+        assert.equal(delEspJson.donacion_estado_entrega, 'entregada');
+
+        // Búsqueda por nombre de receptor debe encontrar la donación trazada
+        const searchRes = await fetch(
+          `${baseUrl}/donaciones?q=${encodeURIComponent(`Albergue Municipal Sur ${stamp}`)}`
+        );
+        assert.equal(searchRes.status, 200);
+        const searchRows = (await searchRes.json()) as any[];
+        assert.equal(searchRows.length, 1);
+        assert.equal(searchRows[0].id, espDonation.id);
+        assert.equal(searchRows[0].ultimo_receptor, `Albergue Municipal Sur ${stamp}`);
+      } finally {
+        server.close();
+        if (createdDonationIds.length) {
+          await query('DELETE FROM entregas_donaciones WHERE donacion_id = ANY($1::int[])', [createdDonationIds]);
+          await query('DELETE FROM donaciones WHERE id = ANY($1::int[])', [createdDonationIds]);
+        }
+        if (createdRecipientIds.length) {
+          await query('DELETE FROM receptores WHERE id = ANY($1::int[])', [createdRecipientIds]);
+        }
+        if (createdDonorIds.length) {
+          await query('DELETE FROM donantes WHERE id = ANY($1::int[])', [createdDonorIds]);
+        }
+      }
+    });
+  });
 });
+
 
 
 
