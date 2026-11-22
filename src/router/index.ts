@@ -101,6 +101,9 @@ const routes: RouteRecordRaw[] = [
     path: '/admin/evaluacion-personal',
     name: 'admin-personal-evaluation',
     component: PersonalEvaluationView,
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/admin/evaluacion-salud',
     name: 'admin-health-evaluation',
     component: HealthEvaluationView,

@@ -341,6 +341,9 @@ export const api = {
     payload: RegistrarEvaluacionPersonalPayload
   ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
     const res = await apiClient.post(`/evaluaciones/personal/${postulacionId}`, payload);
+    return res.data;
+  },
+
   // KIR-28: Gestión de Evaluación de Salud Física y Psicológica (KIR-55 & KIR-56)
   async getHealthEvaluations(params?: {
     estado?: string;

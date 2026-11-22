@@ -1202,6 +1202,264 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
   });
 
   // ============================================================================
+  // KIR-26: Gestionar evaluación personal (KIR-62, KIR-63, KIR-64, KIR-65)
+  // ============================================================================
+  describe('KIR-26: Gestionar evaluación personal', () => {
+    it('KIR-62 & KIR-63 & KIR-65: Estructura JSONB, precondición técnica, cálculo de promedio y desbloqueo de competencias vía HTTP y BD', async () => {
+      const cols = await query<{ column_name: string; data_type: string }>(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'evaluaciones_etapas'
+           AND column_name = 'detalle_criterios_personales'`
+      );
+      assert.equal(cols.length, 1, 'La columna detalle_criterios_personales debe existir en evaluaciones_etapas');
+      assert.equal(cols[0].data_type, 'jsonb', 'detalle_criterios_personales debe ser JSONB');
+
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      let postulanteId = 0;
+      let postulacionId = 0;
+
+      try {
+        const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+        assert.ok(proy.length > 0, 'Debe existir un proyecto aprobado');
+
+        const postInsert = await query<{ id: number }>(
+          `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion)
+           VALUES ($1, 'Sofía', 'PersonalTest', '1999-05-20', $2, 'Psicóloga Social')
+           RETURNING id`,
+          [`TEST-PERS-${stamp}`, `personal.test.${stamp}@kiriku.test`]
+        );
+        postulanteId = postInsert[0].id;
+
+        const appInsert = await query<{ id: number }>(
+          `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general)
+           VALUES ($1, $2, 'en_proceso')
+           RETURNING id`,
+          [postulanteId, proy[0].id]
+        );
+        postulacionId = appInsert[0].id;
+
+        await query(
+          `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador, comentarios)
+           VALUES
+             ($1, 'inicial', 'aprobado', 'Comité Admisiones', 'OK'),
+             ($1, 'tecnica', 'en_revision', 'Socio Territorial', 'Pendiente'),
+             ($1, 'personal', 'pendiente', 'Psicología Kirikú', 'Esperando técnica'),
+             ($1, 'competencias', 'pendiente', 'Facilitador Grupal', 'Esperando personal'),
+             ($1, 'salud_fisica_psicologica', 'pendiente', 'Equipo Médico', 'Esperando competencias')`,
+          [postulacionId]
+        );
+
+        const validCriterios = {
+          motivacion_servicio: 5,
+          compromiso_responsabilidad: 4,
+          comunicacion_interpersonal: 4,
+          disponibilidad: 5,
+          madurez_autocuidado: 4,
+        };
+
+        // 1. Sin etapa técnica aprobada debe devolver 400
+        const blockedRes = await fetch(`${baseUrl}/evaluaciones/personal/${postulacionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            estado: 'aprobado',
+            evaluador: 'Entrevistador UCB',
+            comentarios: 'Intento prematuro',
+            criterios: validCriterios,
+          }),
+        });
+        assert.equal(blockedRes.status, 400, 'No debe registrar entrevista personal si técnica no está aprobada');
+
+        // 2. Aprobar técnica y consultar lista personal
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'aprobado' WHERE postulacion_id = $1 AND etapa = 'tecnica'`,
+          [postulacionId]
+        );
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'en_revision' WHERE postulacion_id = $1 AND etapa = 'personal'`,
+          [postulacionId]
+        );
+
+        const listRes = await fetch(`${baseUrl}/evaluaciones/personal?q=${encodeURIComponent(`TEST-PERS-${stamp}`)}`);
+        assert.equal(listRes.status, 200);
+        const listJson = (await listRes.json()) as any[];
+        assert.equal(listJson.length, 1);
+        assert.equal(listJson[0].puede_evaluar, true);
+
+        // 3. Registrar entrevista personal aprobada -> guarda JSONB, promedio 4.4 y desbloquea competencias
+        const saveRes = await fetch(`${baseUrl}/evaluaciones/personal/${postulacionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            estado: 'aprobado',
+            evaluador: 'Lic. Andrea Morales',
+            comentarios: 'Excelente vocación y compromiso con las actividades del proyecto.',
+            criterios: validCriterios,
+          }),
+        });
+        assert.equal(saveRes.status, 200);
+        const saveJson = (await saveRes.json()) as any;
+        assert.equal(saveJson.puntaje_promedio, 4.4);
+        assert.equal(saveJson.estado_general, 'en_proceso');
+
+        const compStage = await query<{ estado: string }>(
+          `SELECT estado FROM evaluaciones_etapas WHERE postulacion_id = $1 AND etapa = 'competencias'`,
+          [postulacionId]
+        );
+        assert.equal(compStage[0]?.estado, 'en_revision', 'Aprobar entrevista personal debe desbloquear competencias');
+      } finally {
+        server.close();
+        if (postulacionId) {
+          await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+          await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+        }
+        if (postulanteId) {
+          await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+        }
+      }
+    });
+  });
+
+  // ============================================================================
+  // KIR-27: Gestionar evaluación por competencias (KIR-58, KIR-59, KIR-60, KIR-61)
+  // ============================================================================
+  describe('KIR-27: Gestionar evaluación por competencias', () => {
+    it('KIR-58 & KIR-59 & KIR-61: Estructura JSONB, precondiciones técnica+personal y desbloqueo de salud vía HTTP y BD', async () => {
+      const cols = await query<{ column_name: string; data_type: string }>(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'evaluaciones_etapas'
+           AND column_name = 'detalle_criterios'`
+      );
+      assert.equal(cols.length, 1, 'La columna detalle_criterios debe existir en evaluaciones_etapas');
+      assert.equal(cols[0].data_type, 'jsonb', 'detalle_criterios debe ser JSONB');
+
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      let postulanteId = 0;
+      let postulacionId = 0;
+
+      try {
+        const proy = await query<{ id: number }>('SELECT id FROM proyectos WHERE estado = $1 LIMIT 1', ['aprobado']);
+        assert.ok(proy.length > 0, 'Debe existir un proyecto aprobado');
+
+        const postInsert = await query<{ id: number }>(
+          `INSERT INTO postulantes (ci, nombres, apellidos, fecha_nacimiento, email, profesion_ocupacion)
+           VALUES ($1, 'Gabriel', 'CompTest', '1998-03-14', $2, 'Facilitador Comunitario')
+           RETURNING id`,
+          [`TEST-COMP-${stamp}`, `comp.test.${stamp}@kiriku.test`]
+        );
+        postulanteId = postInsert[0].id;
+
+        const appInsert = await query<{ id: number }>(
+          `INSERT INTO postulaciones (postulante_id, proyecto_id, estado_general)
+           VALUES ($1, $2, 'en_proceso')
+           RETURNING id`,
+          [postulanteId, proy[0].id]
+        );
+        postulacionId = appInsert[0].id;
+
+        await query(
+          `INSERT INTO evaluaciones_etapas (postulacion_id, etapa, estado, evaluador, comentarios)
+           VALUES
+             ($1, 'inicial', 'aprobado', 'Comité Admisiones', 'OK'),
+             ($1, 'tecnica', 'aprobado', 'Socio Territorial', 'OK'),
+             ($1, 'personal', 'en_revision', 'Psicología Kirikú', 'Pendiente'),
+             ($1, 'competencias', 'pendiente', 'Facilitador Grupal', 'Esperando personal'),
+             ($1, 'salud_fisica_psicologica', 'pendiente', 'Equipo Médico', 'Esperando competencias')`,
+          [postulacionId]
+        );
+
+        const validCriterios = {
+          trabajo_equipo: 5,
+          comunicacion: 4,
+          liderazgo: 5,
+          resolucion_problemas: 4,
+          empatia_adaptabilidad: 5,
+        };
+
+        // 1. Sin personal aprobado debe devolver 400
+        const blockedRes = await fetch(`${baseUrl}/evaluaciones/competencias/${postulacionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            estado: 'aprobado',
+            evaluador: 'Facilitador UCB',
+            comentarios: 'Intento prematuro',
+            criterios: validCriterios,
+          }),
+        });
+        assert.equal(blockedRes.status, 400, 'No debe registrar competencias sin etapa personal aprobada');
+
+        // 2. Aprobar personal y consultar lista competencias
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'aprobado' WHERE postulacion_id = $1 AND etapa = 'personal'`,
+          [postulacionId]
+        );
+        await query(
+          `UPDATE evaluaciones_etapas SET estado = 'en_revision' WHERE postulacion_id = $1 AND etapa = 'competencias'`,
+          [postulacionId]
+        );
+
+        const listRes = await fetch(`${baseUrl}/evaluaciones/competencias?q=${encodeURIComponent(`TEST-COMP-${stamp}`)}`);
+        assert.equal(listRes.status, 200);
+        const listJson = (await listRes.json()) as any[];
+        assert.equal(listJson.length, 1);
+        assert.equal(listJson[0].puede_evaluar, true);
+
+        // 3. Registrar competencias aprobada -> guarda JSONB, promedio 4.6 y desbloquea salud_fisica_psicologica
+        const saveRes = await fetch(`${baseUrl}/evaluaciones/competencias/${postulacionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            estado: 'aprobado',
+            evaluador: 'Facilitador Grupal Kirikú',
+            comentarios: 'Destaca en liderazgo colaborativo y resolución de problemas.',
+            criterios: validCriterios,
+          }),
+        });
+        assert.equal(saveRes.status, 200);
+        const saveJson = (await saveRes.json()) as any;
+        assert.equal(saveJson.puntaje_promedio, 4.6);
+        assert.equal(saveJson.estado_general, 'en_proceso');
+
+        const healthStage = await query<{ estado: string }>(
+          `SELECT estado FROM evaluaciones_etapas WHERE postulacion_id = $1 AND etapa = 'salud_fisica_psicologica'`,
+          [postulacionId]
+        );
+        assert.equal(healthStage[0]?.estado, 'en_revision', 'Aprobar competencias debe desbloquear salud física y psicológica');
+      } finally {
+        server.close();
+        if (postulacionId) {
+          await query('DELETE FROM evaluaciones_etapas WHERE postulacion_id = $1', [postulacionId]);
+          await query('DELETE FROM postulaciones WHERE id = $1', [postulacionId]);
+        }
+        if (postulanteId) {
+          await query('DELETE FROM postulantes WHERE id = $1', [postulanteId]);
+        }
+      }
+    });
+  });
+
+  // ============================================================================
   // KIR-28: Gestionar evaluación de salud física y psicológica (KIR-54, KIR-55, KIR-56, KIR-57)
   // ============================================================================
   describe('KIR-28: Gestionar evaluación de salud física y psicológica', () => {
