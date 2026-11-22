@@ -1,6 +1,5 @@
 import express, { Request, Response, Router } from 'express';
 import { query, supabaseAdmin } from './supabase';
-import { authenticate, requirePermission } from './authorization';
 import {
   calculateCompetencyAverage,
   isCompetencyDecision,
@@ -2581,6 +2580,8 @@ router.post('/evaluaciones/personal/:postulacion_id', async (req: Request, res: 
       await query(`UPDATE postulaciones SET estado_general = 'en_proceso', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
     } else if (estado === 'rechazado') {
       await query(`UPDATE postulaciones SET estado_general = 'rechazado', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
+    } else if (estado === 'observado') {
+      await query(`UPDATE postulaciones SET estado_general = 'en_proceso', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
     }
 
     res.json({
@@ -2747,6 +2748,8 @@ router.post('/evaluaciones/competencias/:postulacion_id', async (req: Request, r
       await query(`UPDATE postulaciones SET estado_general = 'en_proceso', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
     } else if (estado === 'rechazado') {
       await query(`UPDATE postulaciones SET estado_general = 'rechazado', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
+    } else if (estado === 'observado') {
+      await query(`UPDATE postulaciones SET estado_general = 'en_proceso', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
     }
 
     res.json({
