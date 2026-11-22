@@ -922,7 +922,7 @@ function resetFilters() {
 
                       <!-- Quick action to mark as approved if pending -->
                       <button
-                        v-if="stage.estado !== 'aprobado'"
+                        v-if="stage.estado !== 'aprobado' && stage.etapa !== 'competencias' && stage.etapa !== 'personal'"
                         @click="handleQuickStageUpdate(stage.id, 'aprobado')"
                         :disabled="isUpdatingStage"
                         class="text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
@@ -930,6 +930,22 @@ function resetFilters() {
                       >
                         Aprobar
                       </button>
+                      <router-link
+                        v-else-if="stage.estado !== 'aprobado' && stage.etapa === 'competencias'"
+                        to="/admin/evaluacion-competencias"
+                        class="text-xs font-semibold bg-violet-700 hover:bg-violet-800 text-white px-2.5 py-1 rounded-lg transition-colors"
+                        title="Completar la rúbrica de competencias"
+                      >
+                        Abrir rúbrica
+                      </router-link>
+                      <router-link
+                        v-else-if="stage.estado !== 'aprobado' && stage.etapa === 'personal'"
+                        to="/admin/evaluacion-personal"
+                        class="text-xs font-semibold bg-sky-700 hover:bg-sky-800 text-white px-2.5 py-1 rounded-lg transition-colors"
+                        title="Completar la rúbrica de entrevista personal"
+                      >
+                        Abrir entrevista
+                      </router-link>
                     </div>
                   </div>
 
