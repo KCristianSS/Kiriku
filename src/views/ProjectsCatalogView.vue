@@ -95,9 +95,13 @@ function handleConfirmAdult(payload?: { confirmedDate?: string }) {
             <span>Voluntariado Comunitario y Social</span>
           </div>
 
-          <h1 class="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-stone-900 tracking-tight leading-tight mb-4">
-            Transforma vidas con <span class="text-[#289EAB]">Kirikú</span>
+          <h1 class="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-stone-900 tracking-tight leading-tight mb-1.5">
+            Jaimawi
           </h1>
+
+          <p class="text-base sm:text-lg font-bold text-stone-700 mb-3">
+            Transformando vidas con <span class="text-[#289EAB]">Kirikú</span>
+          </p>
 
           <p class="text-stone-600 text-sm sm:text-base leading-relaxed mb-6">
             Explora las iniciativas activas de voluntariado, postúlate a proyectos comunitarios y forma parte de un proceso transparente de evaluación en 5 etapas.
