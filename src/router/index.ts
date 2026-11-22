@@ -13,6 +13,7 @@ import InitialEvaluationView from '../views/admin/InitialEvaluationView.vue';
 import TechnicalEvaluationView from '../views/admin/TechnicalEvaluationView.vue';
 import CompetencyEvaluationView from '../views/admin/CompetencyEvaluationView.vue';
 import PersonalEvaluationView from '../views/admin/PersonalEvaluationView.vue';
+import HealthEvaluationView from '../views/admin/HealthEvaluationView.vue';
 import PublishedProjectsView from '../views/admin/PublishedProjectsView.vue';
 import LoginView from '../views/LoginView.vue';
 import { supabaseAuth } from '../auth';
@@ -100,6 +101,9 @@ const routes: RouteRecordRaw[] = [
     path: '/admin/evaluacion-personal',
     name: 'admin-personal-evaluation',
     component: PersonalEvaluationView,
+    path: '/admin/evaluacion-salud',
+    name: 'admin-health-evaluation',
+    component: HealthEvaluationView,
     meta: { requiresAuth: true },
   },
   {
