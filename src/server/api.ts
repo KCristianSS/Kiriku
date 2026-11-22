@@ -1,5 +1,5 @@
-import express, { Request, Response, Router } from 'express';
-import { query, supabaseAdmin } from './supabase';
+import express, { NextFunction, Request, Response, Router } from 'express';
+import { dbPool, isDatabaseConfigured, query, supabaseAdmin } from './supabase';
 import {
   calculateCompetencyAverage,
   isCompetencyDecision,
@@ -10,18 +10,51 @@ import {
   isPersonalDecision,
   validatePersonalScores,
 } from './personal-evaluation';
+import {
+  calculateDonationBalance,
+  canTransitionDeliveryState,
+  deriveDonationDeliveryStatus,
+  formatDeliveryCode,
+  formatDonationCode,
+  normalizeDeliveryState,
+  normalizeDonorType,
+  normalizeRecipientType,
+  validateDeliveryRegistration,
+} from './donation-traceability';
 import { authenticate, requirePermission, type AuthenticatedRequest } from './authorization';
 
 const router: Router = express.Router();
 
+// Status endpoint (never throws when DATABASE_URL is not yet configured)
+router.get('/status', (_req: Request, res: Response) => {
+  res.json({ databaseConfigured: isDatabaseConfigured });
+});
+
 // Healthcheck endpoint (Docker Desktop / uptime monitoring)
 router.get('/health', async (_req: Request, res: Response) => {
+  if (!isDatabaseConfigured) {
+    return res.status(503).json({
+      status: 'error',
+      database: 'unconfigured',
+      error: 'DATABASE_URL no configurada en las variables de entorno del servidor (.env)',
+    });
+  }
   try {
     await query('SELECT 1');
     res.json({ status: 'ok', database: 'connected', timestamp: new Date().toISOString() });
   } catch (err: any) {
     res.status(503).json({ status: 'error', database: 'disconnected', error: err?.message });
   }
+});
+
+// Guard DB-backed routes cleanly when DATABASE_URL is missing in the environment
+router.use((_req: Request, res: Response, next: NextFunction) => {
+  if (!isDatabaseConfigured) {
+    return res.status(503).json({
+      error: 'Base de datos no conectada: configura DATABASE_URL en los secretos del entorno o en tu archivo .env.',
+    });
+  }
+  next();
 });
 
 // Helper to calculate age from birth date
@@ -2925,29 +2958,225 @@ router.patch('/postulaciones/:id/status', async (req: Request, res: Response) =>
 });
 
 // -------------------------------------------------------------
-// 4. DONACIONES
+// 4. DONACIONES, VÍNCULO DONANTE-RECEPTOR Y TRAZABILIDAD (KIR-32)
 // -------------------------------------------------------------
-router.get('/donaciones', async (req: Request, res: Response) => {
+function mapEntregaRow(e: any) {
+  return {
+    id: e.id,
+    donacion_id: e.donacion_id,
+    donante_id: e.donante_id,
+    receptor_id: e.receptor_id,
+    proyecto_id: e.proyecto_id,
+    organizacion_id: e.organizacion_id,
+    codigo_entrega: e.codigo_entrega || formatDeliveryCode(e.id),
+    estado: e.estado,
+    monto_entregado_bob: e.monto_entregado_bob !== null && e.monto_entregado_bob !== undefined
+      ? Number(e.monto_entregado_bob)
+      : null,
+    detalle_bienes_entregados: e.detalle_bienes_entregados,
+    responsable_entrega: e.responsable_entrega,
+    recibido_por_receptor: e.recibido_por_receptor,
+    fecha_entrega: e.fecha_entrega,
+    observaciones: e.observaciones,
+    created_at: e.created_at,
+    updated_at: e.updated_at,
+    proyecto_titulo: e.proyecto_titulo || null,
+    organizacion_nombre: e.organizacion_nombre || null,
+    receptor: e.receptor_id
+      ? {
+          id: e.receptor_id,
+          nombre: e.receptor_nombre,
+          tipo_receptor: e.receptor_tipo,
+          documento_identidad: e.receptor_documento,
+          email: e.receptor_email,
+          telefono: e.receptor_telefono,
+          ubicacion: e.receptor_ubicacion,
+          proyecto_id: e.receptor_proyecto_id,
+          organizacion_id: e.receptor_organizacion_id,
+          proyecto_titulo: e.proyecto_titulo || null,
+          organizacion_nombre: e.organizacion_nombre || null,
+        }
+      : null,
+  };
+}
+
+router.get('/donaciones/donantes', async (_req: Request, res: Response) => {
   try {
     const rows = await query(`
-      SELECT d.*, 
-             p.titulo as proyecto_titulo,
-             p.ubicacion as proyecto_ubicacion
+      SELECT dn.*, COUNT(d.id)::int AS total_donaciones
+      FROM donantes dn
+      LEFT JOIN donaciones d ON d.donante_id = dn.id
+      GROUP BY dn.id
+      ORDER BY dn.created_at DESC, dn.id DESC
+      LIMIT 100
+    `);
+    res.json(rows);
+  } catch (err: any) {
+    console.error('Error fetching donantes:', err);
+    res.status(500).json({ error: 'Error al consultar donantes registrados' });
+  }
+});
+
+router.get('/donaciones/receptores', async (_req: Request, res: Response) => {
+  try {
+    const rows = await query(`
+      SELECT r.*,
+             p.titulo AS proyecto_titulo,
+             o.nombre AS organizacion_nombre
+      FROM receptores r
+      LEFT JOIN proyectos p ON r.proyecto_id = p.id
+      LEFT JOIN organizaciones o ON r.organizacion_id = o.id
+      ORDER BY r.created_at DESC, r.id DESC
+      LIMIT 100
+    `);
+    res.json(rows);
+  } catch (err: any) {
+    console.error('Error fetching receptores:', err);
+    res.status(500).json({ error: 'Error al consultar receptores registrados' });
+  }
+});
+
+router.get('/donaciones', async (req: Request, res: Response) => {
+  try {
+    const search = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const tipoFilter = typeof req.query.tipo === 'string' ? req.query.tipo.trim() : '';
+    const estadoEntregaFilter =
+      typeof req.query.estado_entrega === 'string' ? req.query.estado_entrega.trim() : '';
+
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (tipoFilter && ['economica', 'especie'].includes(tipoFilter)) {
+      params.push(tipoFilter);
+      conditions.push(`d.tipo_donacion = $${params.length}`);
+    }
+
+    if (
+      estadoEntregaFilter &&
+      ['recibida', 'en_preparacion', 'entrega_parcial', 'entregada'].includes(estadoEntregaFilter)
+    ) {
+      params.push(estadoEntregaFilter);
+      conditions.push(`COALESCE(d.estado_entrega, 'recibida') = $${params.length}`);
+    }
+
+    if (search) {
+      params.push(`%${search}%`);
+      const pIdx = params.length;
+      conditions.push(`(
+        d.donante_nombre ILIKE $${pIdx}
+        OR COALESCE(d.codigo_donacion, 'KIR-DON-' || d.id::text) ILIKE $${pIdx}
+        OR COALESCE(d.descripcion_especie, '') ILIKE $${pIdx}
+        OR COALESCE(p.titulo, '') ILIKE $${pIdx}
+        OR EXISTS (
+          SELECT 1
+          FROM entregas_donaciones ed
+          JOIN receptores rec ON rec.id = ed.receptor_id
+          WHERE ed.donacion_id = d.id
+            AND (rec.nombre ILIKE $${pIdx} OR COALESCE(ed.codigo_entrega, '') ILIKE $${pIdx})
+        )
+      )`);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const donationsRows = await query(
+      `
+      SELECT d.*,
+             p.titulo AS proyecto_titulo,
+             p.ubicacion AS proyecto_ubicacion,
+             dn.nombre AS dn_nombre,
+             dn.tipo_donante AS dn_tipo_donante,
+             dn.documento_identidad AS dn_documento_identidad,
+             dn.email AS dn_email,
+             dn.telefono AS dn_telefono,
+             dn.ciudad AS dn_ciudad
       FROM donaciones d
       LEFT JOIN proyectos p ON d.proyecto_destino_id = p.id
-      ORDER BY d.fecha_recepcion DESC
-    `);
+      LEFT JOIN donantes dn ON d.donante_id = dn.id
+      ${whereClause}
+      ORDER BY d.fecha_recepcion DESC, d.id DESC
+    `,
+      params
+    );
 
-    const formatted = rows.map((r: any) => ({
-      ...r,
-      proyecto: r.proyecto_destino_id
-        ? {
-            id: r.proyecto_destino_id,
-            titulo: r.proyecto_titulo,
-            ubicacion: r.proyecto_ubicacion,
-          }
-        : null,
-    }));
+    if (!donationsRows.length) {
+      return res.json([]);
+    }
+
+    const donationIds = donationsRows.map((d: any) => d.id);
+    const entregasRows = await query(
+      `
+      SELECT e.*,
+             r.nombre AS receptor_nombre,
+             r.tipo_receptor AS receptor_tipo,
+             r.documento_identidad AS receptor_documento,
+             r.email AS receptor_email,
+             r.telefono AS receptor_telefono,
+             r.ubicacion AS receptor_ubicacion,
+             r.proyecto_id AS receptor_proyecto_id,
+             r.organizacion_id AS receptor_organizacion_id,
+             p.titulo AS proyecto_titulo,
+             o.nombre AS organizacion_nombre
+      FROM entregas_donaciones e
+      JOIN receptores r ON e.receptor_id = r.id
+      LEFT JOIN proyectos p ON COALESCE(e.proyecto_id, r.proyecto_id) = p.id
+      LEFT JOIN organizaciones o ON COALESCE(e.organizacion_id, r.organizacion_id) = o.id
+      WHERE e.donacion_id = ANY($1::int[])
+      ORDER BY e.fecha_entrega DESC, e.id DESC
+    `,
+      [donationIds]
+    );
+
+    const entregasByDonation = new Map<number, any[]>();
+    for (const row of entregasRows) {
+      const mapped = mapEntregaRow(row);
+      const list = entregasByDonation.get(row.donacion_id) || [];
+      list.push(mapped);
+      entregasByDonation.set(row.donacion_id, list);
+    }
+
+    const formatted = donationsRows.map((r: any) => {
+      const entregas = entregasByDonation.get(r.id) || [];
+      const balance = calculateDonationBalance(r.tipo_donacion, r.monto_bob, entregas);
+      const derivedStatus = deriveDonationDeliveryStatus(r.tipo_donacion, r.monto_bob, entregas);
+
+      return {
+        ...r,
+        monto_bob: r.monto_bob !== null && r.monto_bob !== undefined ? Number(r.monto_bob) : null,
+        codigo_donacion: r.codigo_donacion || formatDonationCode(r.id),
+        estado_entrega: r.estado_entrega || derivedStatus,
+        proyecto: r.proyecto_destino_id
+          ? {
+              id: r.proyecto_destino_id,
+              titulo: r.proyecto_titulo,
+              ubicacion: r.proyecto_ubicacion,
+            }
+          : null,
+        donante: r.donante_id
+          ? {
+              id: r.donante_id,
+              nombre: r.dn_nombre || r.donante_nombre,
+              tipo_donante: r.dn_tipo_donante || r.donante_tipo || 'persona',
+              documento_identidad: r.dn_documento_identidad || r.donante_documento || null,
+              email: r.dn_email || r.donante_email || null,
+              telefono: r.dn_telefono || r.donante_telefono || null,
+              ciudad: r.dn_ciudad || null,
+            }
+          : {
+              id: `legacy-${r.id}`,
+              nombre: r.donante_nombre,
+              tipo_donante: r.donante_tipo || 'persona',
+              documento_identidad: r.donante_documento || null,
+              email: r.donante_email || null,
+              telefono: r.donante_telefono || null,
+            },
+        entregas,
+        entregas_count: entregas.length,
+        monto_entregado_total: balance.monto_entregado_bob,
+        saldo_disponible_bob: balance.saldo_disponible_bob,
+        ultimo_receptor: entregas[0]?.receptor?.nombre || null,
+      };
+    });
 
     res.json(formatted);
   } catch (err: any) {
@@ -2956,54 +3185,583 @@ router.get('/donaciones', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/donaciones/:id/trazabilidad', async (req: Request, res: Response) => {
+  try {
+    const idParam = String(req.params.id || '').trim().toUpperCase();
+    const numericId = idParam.startsWith('KIR-DON-')
+      ? Number(idParam.replace('KIR-DON-', ''))
+      : Number(idParam);
+
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+      return res.status(400).json({ error: 'Identificador de donación inválido' });
+    }
+
+    const donRows = await query(
+      `
+      SELECT d.*,
+             p.titulo AS proyecto_titulo,
+             p.ubicacion AS proyecto_ubicacion,
+             dn.nombre AS dn_nombre,
+             dn.tipo_donante AS dn_tipo_donante,
+             dn.documento_identidad AS dn_documento_identidad,
+             dn.email AS dn_email,
+             dn.telefono AS dn_telefono,
+             dn.ciudad AS dn_ciudad,
+             dn.created_at AS dn_created_at
+      FROM donaciones d
+      LEFT JOIN proyectos p ON d.proyecto_destino_id = p.id
+      LEFT JOIN donantes dn ON d.donante_id = dn.id
+      WHERE d.id = $1
+      LIMIT 1
+    `,
+      [numericId]
+    );
+
+    if (!donRows.length) {
+      return res.status(404).json({ error: 'Donación no encontrada' });
+    }
+
+    const d = donRows[0];
+    const entregasRows = await query(
+      `
+      SELECT e.*,
+             r.nombre AS receptor_nombre,
+             r.tipo_receptor AS receptor_tipo,
+             r.documento_identidad AS receptor_documento,
+             r.email AS receptor_email,
+             r.telefono AS receptor_telefono,
+             r.ubicacion AS receptor_ubicacion,
+             r.proyecto_id AS receptor_proyecto_id,
+             r.organizacion_id AS receptor_organizacion_id,
+             p.titulo AS proyecto_titulo,
+             o.nombre AS organizacion_nombre
+      FROM entregas_donaciones e
+      JOIN receptores r ON e.receptor_id = r.id
+      LEFT JOIN proyectos p ON COALESCE(e.proyecto_id, r.proyecto_id) = p.id
+      LEFT JOIN organizaciones o ON COALESCE(e.organizacion_id, r.organizacion_id) = o.id
+      WHERE e.donacion_id = $1
+      ORDER BY e.fecha_entrega ASC, e.id ASC
+    `,
+      [numericId]
+    );
+
+    const entregas = entregasRows.map(mapEntregaRow);
+    const balance = calculateDonationBalance(d.tipo_donacion, d.monto_bob, entregas);
+    const estadoEntrega = d.estado_entrega || deriveDonationDeliveryStatus(d.tipo_donacion, d.monto_bob, entregas);
+    const receptoresUnicos = new Set(entregas.map((e) => e.receptor_id));
+
+    const donante = {
+      id: d.donante_id || `legacy-${d.id}`,
+      nombre: d.dn_nombre || d.donante_nombre,
+      tipo_donante: d.dn_tipo_donante || d.donante_tipo || 'persona',
+      documento_identidad: d.dn_documento_identidad || d.donante_documento || null,
+      email: d.dn_email || d.donante_email || null,
+      telefono: d.dn_telefono || d.donante_telefono || null,
+      ciudad: d.dn_ciudad || null,
+      created_at: d.dn_created_at || d.fecha_recepcion,
+    };
+
+    const proyectoDestino = d.proyecto_destino_id
+      ? {
+          id: d.proyecto_destino_id,
+          titulo: d.proyecto_titulo,
+          ubicacion: d.proyecto_ubicacion,
+        }
+      : null;
+
+    res.json({
+      donacion: {
+        ...d,
+        monto_bob: d.monto_bob !== null && d.monto_bob !== undefined ? Number(d.monto_bob) : null,
+        codigo_donacion: d.codigo_donacion || formatDonationCode(d.id),
+        estado_entrega: estadoEntrega,
+        proyecto: proyectoDestino,
+        donante,
+      },
+      donante,
+      proyecto_destino: proyectoDestino,
+      entregas,
+      resumen: {
+        codigo_donacion: d.codigo_donacion || formatDonationCode(d.id),
+        estado_entrega: estadoEntrega,
+        total_entregas: entregas.length,
+        entregas_completadas: balance.entregas_completadas,
+        entregas_pendientes: balance.entregas_pendientes,
+        monto_total_bob: balance.monto_total_bob,
+        monto_entregado_bob: balance.monto_entregado_bob,
+        saldo_disponible_bob: balance.saldo_disponible_bob,
+        receptores_vinculados: receptoresUnicos.size,
+      },
+    });
+  } catch (err: any) {
+    console.error('Error fetching donation traceability:', err);
+    res.status(500).json({ error: 'Error al consultar trazabilidad de la donación' });
+  }
+});
+
 router.post('/donaciones', async (req: Request, res: Response) => {
+  const client = await dbPool.connect();
   try {
     const {
       donante_nombre,
+      donante_tipo,
+      donante_documento,
       donante_email,
+      donante_telefono,
+      donante_ciudad,
       tipo_donacion,
       monto_bob,
       descripcion_especie,
       proyecto_destino_id,
       recibido_por,
-    } = req.body;
+    } = req.body || {};
 
-    if (!donante_nombre || !recibido_por || !tipo_donacion) {
+    const cleanNombre = typeof donante_nombre === 'string' ? donante_nombre.trim() : '';
+    const cleanRecibidoPor = typeof recibido_por === 'string' ? recibido_por.trim() : '';
+
+    if (!cleanNombre || !cleanRecibidoPor || !tipo_donacion) {
       return res.status(400).json({
         error: 'Nombre del donante, tipo de donación y persona receptora son obligatorios',
       });
+    }
+
+    if (!['economica', 'especie'].includes(tipo_donacion)) {
+      return res.status(400).json({ error: 'El tipo de donación debe ser economica o especie' });
     }
 
     if (tipo_donacion === 'economica' && (!monto_bob || Number(monto_bob) <= 0)) {
       return res.status(400).json({ error: 'Debe ingresar un monto válido en Bs (BOB)' });
     }
 
-    if (tipo_donacion === 'especie' && !descripcion_especie) {
+    if (tipo_donacion === 'especie' && (!descripcion_especie || !String(descripcion_especie).trim())) {
       return res.status(400).json({ error: 'Debe describir los bienes donados en especie' });
     }
 
-    const rows = await query(
+    const cleanEmail = typeof donante_email === 'string' && donante_email.trim() ? donante_email.trim().toLowerCase() : null;
+    const cleanDoc = typeof donante_documento === 'string' && donante_documento.trim() ? donante_documento.trim() : null;
+    const cleanTel = typeof donante_telefono === 'string' && donante_telefono.trim() ? donante_telefono.trim() : null;
+    const cleanCiudad = typeof donante_ciudad === 'string' && donante_ciudad.trim() ? donante_ciudad.trim() : null;
+    const normalizedTipoDonante = normalizeDonorType(donante_tipo);
+
+    await client.query('BEGIN');
+
+    // Buscar donante existente por documento o correo, o registrar uno nuevo
+    let donanteRow: any = null;
+    if (cleanDoc) {
+      const byDoc = await client.query(
+        'SELECT * FROM donantes WHERE LOWER(TRIM(documento_identidad)) = LOWER($1) LIMIT 1',
+        [cleanDoc]
+      );
+      if (byDoc.rows.length) {
+        donanteRow = byDoc.rows[0];
+      }
+    }
+    if (!donanteRow && cleanEmail) {
+      const byEmail = await client.query(
+        'SELECT * FROM donantes WHERE LOWER(TRIM(email)) = LOWER($1) LIMIT 1',
+        [cleanEmail]
+      );
+      if (byEmail.rows.length) {
+        donanteRow = byEmail.rows[0];
+      }
+    }
+
+    if (donanteRow) {
+      const updDonante = await client.query(
+        `UPDATE donantes
+         SET nombre = $1,
+             tipo_donante = $2,
+             documento_identidad = COALESCE($3, documento_identidad),
+             email = COALESCE($4, email),
+             telefono = COALESCE($5, telefono),
+             ciudad = COALESCE($6, ciudad)
+         WHERE id = $7
+         RETURNING *`,
+        [cleanNombre, normalizedTipoDonante, cleanDoc, cleanEmail, cleanTel, cleanCiudad, donanteRow.id]
+      );
+      donanteRow = updDonante.rows[0];
+    } else {
+      const insDonante = await client.query(
+        `INSERT INTO donantes (nombre, tipo_donante, documento_identidad, email, telefono, ciudad)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [cleanNombre, normalizedTipoDonante, cleanDoc, cleanEmail, cleanTel, cleanCiudad]
+      );
+      donanteRow = insDonante.rows[0];
+    }
+
+    const proyectoId =
+      proyecto_destino_id !== undefined && proyecto_destino_id !== null && String(proyecto_destino_id).trim() !== ''
+        ? Number(proyecto_destino_id)
+        : null;
+
+    const insDon = await client.query(
       `INSERT INTO donaciones (
-         donante_nombre, donante_email, tipo_donacion, 
-         monto_bob, descripcion_especie, proyecto_destino_id, 
-         recibido_por, fecha_recepcion
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         donante_id, donante_nombre, donante_tipo, donante_documento,
+         donante_email, donante_telefono, tipo_donacion,
+         monto_bob, descripcion_especie, proyecto_destino_id,
+         recibido_por, fecha_recepcion, estado_entrega, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), 'recibida', NOW())
        RETURNING *`,
       [
-        donante_nombre,
-        donante_email || null,
+        donanteRow.id,
+        cleanNombre,
+        normalizedTipoDonante,
+        cleanDoc,
+        cleanEmail,
+        cleanTel,
         tipo_donacion,
         tipo_donacion === 'economica' ? Number(monto_bob) : null,
-        tipo_donacion === 'especie' ? descripcion_especie : null,
-        proyecto_destino_id || null,
-        recibido_por,
+        tipo_donacion === 'especie' ? String(descripcion_especie).trim() : null,
+        proyectoId,
+        cleanRecibidoPor,
       ]
     );
 
-    res.status(201).json(rows[0]);
+    const createdId = insDon.rows[0].id;
+    const codigoDonacion = formatDonationCode(createdId);
+
+    const updatedDon = await client.query(
+      `UPDATE donaciones SET codigo_donacion = $1 WHERE id = $2 RETURNING *`,
+      [codigoDonacion, createdId]
+    );
+
+    let proyectoObj: any = null;
+    if (proyectoId) {
+      const pRows = await client.query('SELECT id, titulo, ubicacion FROM proyectos WHERE id = $1', [proyectoId]);
+      if (pRows.rows.length) proyectoObj = pRows.rows[0];
+    }
+
+    await client.query('COMMIT');
+
+    const row = updatedDon.rows[0];
+    res.status(201).json({
+      ...row,
+      monto_bob: row.monto_bob !== null && row.monto_bob !== undefined ? Number(row.monto_bob) : null,
+      codigo_donacion: codigoDonacion,
+      donante: donanteRow,
+      proyecto: proyectoObj,
+      entregas: [],
+      entregas_count: 0,
+      monto_entregado_total: 0,
+      saldo_disponible_bob: row.tipo_donacion === 'economica' ? Number(row.monto_bob || 0) : 0,
+      ultimo_receptor: null,
+    });
   } catch (err: any) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Error creating donacion:', err);
     res.status(500).json({ error: 'Error al registrar donación' });
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/donaciones/:id/entregas', async (req: Request, res: Response) => {
+  const client = await dbPool.connect();
+  try {
+    const donacionId = Number(req.params.id);
+    if (!Number.isInteger(donacionId) || donacionId <= 0) {
+      return res.status(400).json({ error: 'ID de donación inválido' });
+    }
+
+    const donRows = await client.query('SELECT * FROM donaciones WHERE id = $1 LIMIT 1', [donacionId]);
+    if (!donRows.rows.length) {
+      return res.status(404).json({ error: 'Donación no encontrada' });
+    }
+    const donacion = donRows.rows[0];
+
+    const existingEntregasRows = await client.query(
+      'SELECT id, estado, monto_entregado_bob FROM entregas_donaciones WHERE donacion_id = $1',
+      [donacionId]
+    );
+
+    const validation = validateDeliveryRegistration(donacion, existingEntregasRows.rows, req.body || {});
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const body = req.body || {};
+    await client.query('BEGIN');
+
+    // Garantizar donante_id vinculado si era una donación histórica sin donante_id
+    let donanteId = donacion.donante_id;
+    if (!donanteId) {
+      const insDonante = await client.query(
+        `INSERT INTO donantes (nombre, tipo_donante, documento_identidad, email, telefono)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        [
+          donacion.donante_nombre,
+          normalizeDonorType(donacion.donante_tipo),
+          donacion.donante_documento || null,
+          donacion.donante_email || null,
+          donacion.donante_telefono || null,
+        ]
+      );
+      donanteId = insDonante.rows[0].id;
+      await client.query('UPDATE donaciones SET donante_id = $1 WHERE id = $2', [donanteId, donacionId]);
+    }
+
+    // Resolver o registrar receptor
+    let receptorRow: any = null;
+    if (body.receptor_id !== undefined && body.receptor_id !== null && String(body.receptor_id).trim() !== '') {
+      const recRes = await client.query('SELECT * FROM receptores WHERE id = $1 LIMIT 1', [
+        Number(body.receptor_id),
+      ]);
+      if (!recRes.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'El receptor seleccionado no existe' });
+      }
+      receptorRow = recRes.rows[0];
+    } else {
+      const proyectoIdRec =
+        body.proyecto_id !== undefined && body.proyecto_id !== null && String(body.proyecto_id).trim() !== ''
+          ? Number(body.proyecto_id)
+          : donacion.proyecto_destino_id || null;
+      const orgIdRec =
+        body.organizacion_id !== undefined && body.organizacion_id !== null && String(body.organizacion_id).trim() !== ''
+          ? Number(body.organizacion_id)
+          : null;
+
+      const insRec = await client.query(
+        `INSERT INTO receptores (
+           nombre, tipo_receptor, documento_identidad, email, telefono, ubicacion, proyecto_id, organizacion_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
+        [
+          String(body.receptor_nombre).trim(),
+          normalizeRecipientType(body.receptor_tipo),
+          body.receptor_documento ? String(body.receptor_documento).trim() : null,
+          body.receptor_email ? String(body.receptor_email).trim().toLowerCase() : null,
+          body.receptor_telefono ? String(body.receptor_telefono).trim() : null,
+          body.receptor_ubicacion ? String(body.receptor_ubicacion).trim() : null,
+          proyectoIdRec,
+          orgIdRec,
+        ]
+      );
+      receptorRow = insRec.rows[0];
+    }
+
+    const entregaProyectoId =
+      body.proyecto_id !== undefined && body.proyecto_id !== null && String(body.proyecto_id).trim() !== ''
+        ? Number(body.proyecto_id)
+        : receptorRow.proyecto_id || donacion.proyecto_destino_id || null;
+    const entregaOrgId =
+      body.organizacion_id !== undefined && body.organizacion_id !== null && String(body.organizacion_id).trim() !== ''
+        ? Number(body.organizacion_id)
+        : receptorRow.organizacion_id || null;
+
+    const fechaEntrega = body.fecha_entrega ? new Date(body.fecha_entrega) : new Date();
+    const validFecha = Number.isNaN(fechaEntrega.getTime()) ? new Date() : fechaEntrega;
+
+    const insEntrega = await client.query(
+      `INSERT INTO entregas_donaciones (
+         donacion_id, donante_id, receptor_id, proyecto_id, organizacion_id,
+         codigo_entrega, estado, monto_entregado_bob, detalle_bienes_entregados,
+         responsable_entrega, recibido_por_receptor, fecha_entrega, observaciones,
+         created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, 'TEMP', $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+       RETURNING *`,
+      [
+        donacionId,
+        donanteId,
+        receptorRow.id,
+        entregaProyectoId,
+        entregaOrgId,
+        validation.estado,
+        validation.monto_entregado_bob,
+        donacion.tipo_donacion === 'especie'
+          ? String(body.detalle_bienes_entregados).trim()
+          : body.detalle_bienes_entregados
+          ? String(body.detalle_bienes_entregados).trim()
+          : null,
+        String(body.responsable_entrega).trim(),
+        String(body.recibido_por_receptor).trim(),
+        validFecha.toISOString(),
+        body.observaciones ? String(body.observaciones).trim() : null,
+      ]
+    );
+
+    const entregaId = insEntrega.rows[0].id;
+    const codigoEntrega = formatDeliveryCode(entregaId);
+
+    await client.query('UPDATE entregas_donaciones SET codigo_entrega = $1 WHERE id = $2', [
+      codigoEntrega,
+      entregaId,
+    ]);
+
+    const allEntregasRes = await client.query(
+      'SELECT estado, monto_entregado_bob FROM entregas_donaciones WHERE donacion_id = $1',
+      [donacionId]
+    );
+    const nuevoEstadoDonacion = deriveDonationDeliveryStatus(
+      donacion.tipo_donacion,
+      donacion.monto_bob,
+      allEntregasRes.rows
+    );
+    const balance = calculateDonationBalance(
+      donacion.tipo_donacion,
+      donacion.monto_bob,
+      allEntregasRes.rows
+    );
+
+    await client.query(
+      `UPDATE donaciones
+       SET estado_entrega = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [nuevoEstadoDonacion, donacionId]
+    );
+
+    const enrichedEntregaRes = await client.query(
+      `
+      SELECT e.*,
+             r.nombre AS receptor_nombre,
+             r.tipo_receptor AS receptor_tipo,
+             r.documento_identidad AS receptor_documento,
+             r.email AS receptor_email,
+             r.telefono AS receptor_telefono,
+             r.ubicacion AS receptor_ubicacion,
+             r.proyecto_id AS receptor_proyecto_id,
+             r.organizacion_id AS receptor_organizacion_id,
+             p.titulo AS proyecto_titulo,
+             o.nombre AS organizacion_nombre
+      FROM entregas_donaciones e
+      JOIN receptores r ON e.receptor_id = r.id
+      LEFT JOIN proyectos p ON COALESCE(e.proyecto_id, r.proyecto_id) = p.id
+      LEFT JOIN organizaciones o ON COALESCE(e.organizacion_id, r.organizacion_id) = o.id
+      WHERE e.id = $1
+      LIMIT 1
+    `,
+      [entregaId]
+    );
+
+    await client.query('COMMIT');
+
+    res.status(201).json({
+      message: 'Entrega registrada y vínculo donante-receptor trazado correctamente',
+      entrega: mapEntregaRow(enrichedEntregaRes.rows[0]),
+      donacion_estado_entrega: nuevoEstadoDonacion,
+      saldo_disponible_bob: balance.saldo_disponible_bob,
+    });
+  } catch (err: any) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Error registering donation delivery:', err);
+    res.status(500).json({ error: 'Error al registrar entrega de donación' });
+  } finally {
+    client.release();
+  }
+});
+
+router.patch('/donaciones/entregas/:entregaId', async (req: Request, res: Response) => {
+  const client = await dbPool.connect();
+  try {
+    const entregaId = Number(req.params.entregaId);
+    if (!Number.isInteger(entregaId) || entregaId <= 0) {
+      return res.status(400).json({ error: 'ID de entrega inválido' });
+    }
+
+    const existingRes = await client.query(
+      'SELECT * FROM entregas_donaciones WHERE id = $1 LIMIT 1',
+      [entregaId]
+    );
+    if (!existingRes.rows.length) {
+      return res.status(404).json({ error: 'Registro de entrega no encontrado' });
+    }
+
+    const existing = existingRes.rows[0];
+    const nextStateRaw = req.body?.estado;
+    if (!nextStateRaw || !['programada', 'en_camino', 'entregada', 'verificada'].includes(String(nextStateRaw))) {
+      return res.status(400).json({
+        error: 'Estado inválido. Valores permitidos: programada, en_camino, entregada, verificada',
+      });
+    }
+
+    const currentState = normalizeDeliveryState(existing.estado);
+    const nextState = normalizeDeliveryState(nextStateRaw);
+
+    if (!canTransitionDeliveryState(currentState, nextState)) {
+      return res.status(400).json({
+        error: `No se puede retroceder una entrega del estado '${currentState}' a '${nextState}'`,
+      });
+    }
+
+    await client.query('BEGIN');
+
+    const recibidoPor =
+      typeof req.body?.recibido_por_receptor === 'string' && req.body.recibido_por_receptor.trim()
+        ? req.body.recibido_por_receptor.trim()
+        : existing.recibido_por_receptor;
+    const observaciones =
+      typeof req.body?.observaciones === 'string' && req.body.observaciones.trim()
+        ? req.body.observaciones.trim()
+        : existing.observaciones;
+
+    await client.query(
+      `UPDATE entregas_donaciones
+       SET estado = $1,
+           recibido_por_receptor = $2,
+           observaciones = $3,
+           updated_at = NOW()
+       WHERE id = $4`,
+      [nextState, recibidoPor, observaciones, entregaId]
+    );
+
+    const donRes = await client.query('SELECT * FROM donaciones WHERE id = $1 LIMIT 1', [
+      existing.donacion_id,
+    ]);
+    const donacion = donRes.rows[0];
+
+    const allEntregasRes = await client.query(
+      'SELECT estado, monto_entregado_bob FROM entregas_donaciones WHERE donacion_id = $1',
+      [existing.donacion_id]
+    );
+    const nuevoEstadoDonacion = deriveDonationDeliveryStatus(
+      donacion.tipo_donacion,
+      donacion.monto_bob,
+      allEntregasRes.rows
+    );
+
+    await client.query(
+      'UPDATE donaciones SET estado_entrega = $1, updated_at = NOW() WHERE id = $2',
+      [nuevoEstadoDonacion, existing.donacion_id]
+    );
+
+    const enrichedEntregaRes = await client.query(
+      `
+      SELECT e.*,
+             r.nombre AS receptor_nombre,
+             r.tipo_receptor AS receptor_tipo,
+             r.documento_identidad AS receptor_documento,
+             r.email AS receptor_email,
+             r.telefono AS receptor_telefono,
+             r.ubicacion AS receptor_ubicacion,
+             r.proyecto_id AS receptor_proyecto_id,
+             r.organizacion_id AS receptor_organizacion_id,
+             p.titulo AS proyecto_titulo,
+             o.nombre AS organizacion_nombre
+      FROM entregas_donaciones e
+      JOIN receptores r ON e.receptor_id = r.id
+      LEFT JOIN proyectos p ON COALESCE(e.proyecto_id, r.proyecto_id) = p.id
+      LEFT JOIN organizaciones o ON COALESCE(e.organizacion_id, r.organizacion_id) = o.id
+      WHERE e.id = $1
+      LIMIT 1
+    `,
+      [entregaId]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      message: 'Estado de entrega actualizado correctamente',
+      entrega: mapEntregaRow(enrichedEntregaRes.rows[0]),
+      donacion_estado_entrega: nuevoEstadoDonacion,
+    });
+  } catch (err: any) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Error updating delivery status:', err);
+    res.status(500).json({ error: 'Error al actualizar estado de entrega' });
+  } finally {
+    client.release();
   }
 });
 
@@ -3022,6 +3780,10 @@ router.get('/metrics', async (req: Request, res: Response) => {
     const appsReasignacion = await query("SELECT COUNT(*) as c FROM postulaciones WHERE es_reasignacion = true OR estado_general = 'reasignacion' OR estado_general = 'reenganche'");
     const totalDonacionesBob = await query("SELECT COALESCE(SUM(monto_bob), 0) as s FROM donaciones WHERE tipo_donacion = 'economica'");
     const totalDonacionesEspecie = await query("SELECT COUNT(*) as c FROM donaciones WHERE tipo_donacion = 'especie'");
+    const totalEntregadoBob = await query(
+      "SELECT COALESCE(SUM(monto_entregado_bob), 0) as s FROM entregas_donaciones WHERE estado IN ('entregada', 'verificada')"
+    );
+    const totalEntregas = await query('SELECT COUNT(*) as c FROM entregas_donaciones');
 
     res.json({
       totalProyectos: parseInt(totalProj[0].c, 10),
@@ -3035,6 +3797,8 @@ router.get('/metrics', async (req: Request, res: Response) => {
       postulacionesReenganche: parseInt(appsReasignacion[0].c, 10),
       totalDonacionesBob: parseFloat(totalDonacionesBob[0].s),
       totalDonacionesEspecie: parseInt(totalDonacionesEspecie[0].c, 10),
+      totalDonacionesEntregadoBob: parseFloat(totalEntregadoBob[0].s),
+      totalEntregasRegistradas: parseInt(totalEntregas[0].c, 10),
     });
   } catch (err: any) {
     console.error('Error fetching metrics:', err);

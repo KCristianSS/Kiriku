@@ -393,17 +393,104 @@ export interface PostulacionTrackingItem {
 
 export type DonacionTipo = 'economica' | 'especie';
 
+export type DonanteTipo = 'persona' | 'empresa' | 'organizacion' | 'anonimo';
+
+export type ReceptorTipo = 'proyecto' | 'organizacion' | 'comunidad' | 'persona';
+
+export type DonacionEstadoEntrega = 'recibida' | 'en_preparacion' | 'entrega_parcial' | 'entregada';
+
+export type EntregaEstado = 'programada' | 'en_camino' | 'entregada' | 'verificada';
+
+export interface Donante {
+  id: number | string;
+  nombre: string;
+  tipo_donante: DonanteTipo | string;
+  documento_identidad?: string | null;
+  email?: string | null;
+  telefono?: string | null;
+  ciudad?: string | null;
+  created_at?: string;
+}
+
+export interface Receptor {
+  id: number | string;
+  nombre: string;
+  tipo_receptor: ReceptorTipo | string;
+  documento_identidad?: string | null;
+  email?: string | null;
+  telefono?: string | null;
+  ubicacion?: string | null;
+  proyecto_id?: number | string | null;
+  organizacion_id?: number | string | null;
+  proyecto_titulo?: string | null;
+  organizacion_nombre?: string | null;
+  created_at?: string;
+}
+
+export interface EntregaDonacion {
+  id: number | string;
+  donacion_id: number | string;
+  donante_id?: number | string | null;
+  receptor_id: number | string;
+  proyecto_id?: number | string | null;
+  organizacion_id?: number | string | null;
+  codigo_entrega: string;
+  estado: EntregaEstado;
+  monto_entregado_bob?: number | null;
+  detalle_bienes_entregados?: string | null;
+  responsable_entrega: string;
+  recibido_por_receptor: string;
+  fecha_entrega: string;
+  observaciones?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  receptor?: Receptor | null;
+  proyecto_titulo?: string | null;
+  organizacion_nombre?: string | null;
+}
+
 export interface Donacion {
   id: number | string;
+  codigo_donacion?: string;
+  donante_id?: number | string | null;
   donante_nombre: string;
+  donante_tipo?: DonanteTipo | string;
+  donante_documento?: string | null;
   donante_email?: string | null;
+  donante_telefono?: string | null;
   tipo_donacion: DonacionTipo;
   monto_bob?: number | null;
   descripcion_especie?: string | null;
   proyecto_destino_id?: number | string | null;
   recibido_por: string;
   fecha_recepcion: string;
+  estado_entrega?: DonacionEstadoEntrega;
+  updated_at?: string;
   proyecto?: Proyecto | null;
+  donante?: Donante | null;
+  entregas?: EntregaDonacion[];
+  entregas_count?: number;
+  monto_entregado_total?: number;
+  saldo_disponible_bob?: number;
+  ultimo_receptor?: string | null;
+}
+
+export interface DonacionTrazabilidad {
+  donacion: Donacion;
+  donante: Donante;
+  proyecto_destino: Proyecto | null;
+  entregas: EntregaDonacion[];
+  resumen: {
+    codigo_donacion: string;
+    estado_entrega: DonacionEstadoEntrega;
+    total_entregas: number;
+    entregas_completadas: number;
+    entregas_pendientes: number;
+    monto_total_bob: number;
+    monto_entregado_bob: number;
+    saldo_disponible_bob: number;
+    receptores_vinculados: number;
+  };
 }
 
 export interface CreatePostulantePayload {
@@ -469,12 +556,41 @@ export interface ProposeProjectPayload {
 
 export interface CreateDonationPayload {
   donante_nombre: string;
+  donante_tipo?: DonanteTipo;
+  donante_documento?: string;
   donante_email?: string;
+  donante_telefono?: string;
+  donante_ciudad?: string;
   tipo_donacion: DonacionTipo;
   monto_bob?: number;
   descripcion_especie?: string;
-  proyecto_destino_id?: string | null;
+  proyecto_destino_id?: string | number | null;
   recibido_por: string;
+}
+
+export interface RegisterDeliveryPayload {
+  receptor_id?: number | string | null;
+  receptor_nombre?: string;
+  receptor_tipo?: ReceptorTipo;
+  receptor_documento?: string;
+  receptor_email?: string;
+  receptor_telefono?: string;
+  receptor_ubicacion?: string;
+  proyecto_id?: number | string | null;
+  organizacion_id?: number | string | null;
+  estado?: EntregaEstado;
+  monto_entregado_bob?: number | null;
+  detalle_bienes_entregados?: string;
+  responsable_entrega: string;
+  recibido_por_receptor: string;
+  fecha_entrega?: string;
+  observaciones?: string;
+}
+
+export interface UpdateDeliveryStatusPayload {
+  estado: EntregaEstado;
+  recibido_por_receptor?: string;
+  observaciones?: string;
 }
 
 export interface DashboardMetrics {
@@ -489,4 +605,6 @@ export interface DashboardMetrics {
   postulacionesReenganche?: number;
   totalDonacionesBob: number;
   totalDonacionesEspecie: number;
+  totalDonacionesEntregadoBob?: number;
+  totalEntregasRegistradas?: number;
 }
