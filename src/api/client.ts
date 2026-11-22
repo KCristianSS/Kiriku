@@ -12,6 +12,10 @@ import type {
   EvaluacionInicialItem,
   RegistrarEvaluacionInicialPayload,
   EvaluacionTecnicaItem,
+  EvaluacionCompetenciasItem,
+  RegistrarEvaluacionCompetenciasPayload,
+  EvaluacionPersonalItem,
+  RegistrarEvaluacionPersonalPayload,
   RegistrarEvaluacionTecnicaPayload,
   EvaluacionSaludItem,
   RegistrarEvaluacionSaludPayload,
@@ -304,6 +308,39 @@ export const api = {
     return res.data;
   },
 
+  // KIR-59: Gestión de la evaluación por competencias.
+  async getCompetencyEvaluations(params?: {
+    estado?: string;
+    proyecto_id?: number | string;
+    q?: string;
+  }): Promise<EvaluacionCompetenciasItem[]> {
+    const res = await apiClient.get<EvaluacionCompetenciasItem[]>('/evaluaciones/competencias', { params });
+    return res.data;
+  },
+
+  async submitCompetencyEvaluation(
+    postulacionId: number | string,
+    payload: RegistrarEvaluacionCompetenciasPayload
+  ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
+    const res = await apiClient.post(`/evaluaciones/competencias/${postulacionId}`, payload);
+    return res.data;
+  },
+
+  // KIR-63: Gestión de la entrevista personal.
+  async getPersonalEvaluations(params?: {
+    estado?: string;
+    proyecto_id?: number | string;
+    q?: string;
+  }): Promise<EvaluacionPersonalItem[]> {
+    const res = await apiClient.get<EvaluacionPersonalItem[]>('/evaluaciones/personal', { params });
+    return res.data;
+  },
+
+  async submitPersonalEvaluation(
+    postulacionId: number | string,
+    payload: RegistrarEvaluacionPersonalPayload
+  ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
+    const res = await apiClient.post(`/evaluaciones/personal/${postulacionId}`, payload);
   // KIR-28: Gestión de Evaluación de Salud Física y Psicológica (KIR-55 & KIR-56)
   async getHealthEvaluations(params?: {
     estado?: string;

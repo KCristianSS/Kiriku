@@ -182,6 +182,16 @@ export interface RegistrarEvaluacionTecnicaPayload {
   criterios?: EvaluacionTecnicaCriterios;
 }
 
+// KIR-58: Rúbrica estructurada para la evaluación por competencias.
+export interface EvaluacionCompetenciasCriterios {
+  trabajo_equipo: number;
+  comunicacion: number;
+  liderazgo: number;
+  resolucion_problemas: number;
+  empatia_adaptabilidad: number;
+}
+
+export interface EvaluacionCompetenciasItem {
 // KIR-54: Estructura de evaluación de salud física y psicológica (Etapa 5)
 export interface EvaluacionSaludCriterios {
   apto_fisico?: boolean;
@@ -197,6 +207,48 @@ export interface EvaluacionSaludItem {
   evaluador?: string | null;
   comentarios?: string | null;
   fecha_evaluacion?: string | null;
+  detalle_criterios: EvaluacionCompetenciasCriterios;
+  puntaje_promedio: number | null;
+  tecnica_estado: EtapaEstado | string;
+  personal_estado: EtapaEstado | string;
+  puede_evaluar: boolean;
+  postulante: Postulante;
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    organizacion_nombre?: string | null;
+  };
+}
+
+export interface RegistrarEvaluacionCompetenciasPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado';
+  evaluador: string;
+  comentarios: string;
+  criterios: EvaluacionCompetenciasCriterios;
+}
+
+// KIR-62: Criterios estructurados para la entrevista personal.
+export interface EvaluacionPersonalCriterios {
+  motivacion_servicio: number;
+  compromiso_responsabilidad: number;
+  comunicacion_interpersonal: number;
+  disponibilidad: number;
+  madurez_autocuidado: number;
+}
+
+export interface EvaluacionPersonalItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  detalle_criterios_personales: EvaluacionPersonalCriterios;
+  puntaje_promedio: number | null;
+  tecnica_estado: EtapaEstado | string;
+  puede_evaluar: boolean;
+  postulante: Postulante;
   postulacion_fecha: string;
   postulacion_estado: PostulacionEstado;
   inicial_estado: EtapaEstado | string;
@@ -218,6 +270,11 @@ export interface EvaluacionSaludItem {
   };
 }
 
+export interface RegistrarEvaluacionPersonalPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado';
+  evaluador: string;
+  comentarios: string;
+  criterios: EvaluacionPersonalCriterios;
 export interface RegistrarEvaluacionSaludPayload {
   estado: 'aprobado' | 'observado' | 'rechazado' | 'en_revision';
   evaluador: string;
