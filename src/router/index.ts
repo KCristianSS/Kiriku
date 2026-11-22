@@ -11,6 +11,8 @@ import ApplicantsPoolView from '../views/admin/ApplicantsPoolView.vue';
 import RolesManagementView from '../views/admin/RolesManagementView.vue';
 import InitialEvaluationView from '../views/admin/InitialEvaluationView.vue';
 import TechnicalEvaluationView from '../views/admin/TechnicalEvaluationView.vue';
+import CompetencyEvaluationView from '../views/admin/CompetencyEvaluationView.vue';
+import PersonalEvaluationView from '../views/admin/PersonalEvaluationView.vue';
 import HealthEvaluationView from '../views/admin/HealthEvaluationView.vue';
 import PublishedProjectsView from '../views/admin/PublishedProjectsView.vue';
 import LoginView from '../views/LoginView.vue';
@@ -90,6 +92,15 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/admin/evaluacion-competencias',
+    name: 'admin-competency-evaluation',
+    component: CompetencyEvaluationView,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/admin/evaluacion-personal',
+    name: 'admin-personal-evaluation',
+    component: PersonalEvaluationView,
     path: '/admin/evaluacion-salud',
     name: 'admin-health-evaluation',
     component: HealthEvaluationView,
