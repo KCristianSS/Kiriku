@@ -1,6 +1,6 @@
 import express, { Request, Response, Router } from 'express';
 import { query, supabaseAdmin } from './supabase';
-import { authenticate, requirePermission } from './authorization';
+import { authenticate, requirePermission, type AuthenticatedRequest } from './authorization';
 import {
   calculateCompetencyAverage,
   isCompetencyDecision,
@@ -11,7 +11,10 @@ import {
   isPersonalDecision,
   validatePersonalScores,
 } from './personal-evaluation';
-import { authenticate, requirePermission, type AuthenticatedRequest } from './authorization';
+import {
+  normalizeRecipientEmail,
+  validateDonationNeedRequest,
+} from './donation-needs';
 
 const router: Router = express.Router();
 
@@ -3001,6 +3004,80 @@ router.post('/donaciones', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Error creating donacion:', err);
     res.status(500).json({ error: 'Error al registrar donación' });
+  }
+});
+
+// KIR-43: Registrar en una sola operación la necesidad y los datos de su receptor.
+router.post('/necesidades-donacion', async (req: Request, res: Response) => {
+  try {
+    const request = req.body ?? {};
+    const validation = validateDonationNeedRequest(request);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const projectId = request.proyecto_destino_id || null;
+    if (projectId) {
+      const project = await query<{ id: number | string }>(
+        `SELECT id FROM proyectos WHERE id = $1 AND estado = 'aprobado' LIMIT 1`,
+        [projectId]
+      );
+      if (!project.length) {
+        return res.status(400).json({ error: 'El proyecto seleccionado no existe o no está aprobado' });
+      }
+    }
+
+    const amount = request.tipo_necesidad === 'economica' ? Number(request.monto_objetivo) : null;
+    const quantity = request.tipo_necesidad === 'especie' && request.cantidad_objetivo
+      ? Number(request.cantidad_objetivo)
+      : null;
+    const rows = await query(
+      `WITH receptor AS (
+         INSERT INTO receptores_donacion (nombre, email, telefono, organizacion)
+         VALUES ($2, $1, $3, $4)
+         ON CONFLICT (email) DO UPDATE SET
+           nombre = EXCLUDED.nombre,
+           telefono = EXCLUDED.telefono,
+           organizacion = EXCLUDED.organizacion,
+           updated_at = NOW()
+         RETURNING id, nombre, email, telefono, organizacion
+       ), solicitud AS (
+         INSERT INTO necesidades_donacion (
+           receptor_id, proyecto_destino_id, tipo_necesidad, titulo, descripcion,
+           monto_objetivo, cantidad_objetivo, unidad_medida, fecha_necesaria
+         )
+         SELECT id, $5, $6, $7, $8, $9, $10, $11, $12 FROM receptor
+         RETURNING *
+       )
+       SELECT solicitud.*, json_build_object(
+         'nombre', receptor.nombre,
+         'email', receptor.email,
+         'telefono', receptor.telefono,
+         'organizacion', receptor.organizacion
+       ) AS receptor
+       FROM solicitud JOIN receptor ON receptor.id = solicitud.receptor_id`,
+      [
+        normalizeRecipientEmail(request.receptor_email),
+        request.receptor_nombre.trim(),
+        request.receptor_telefono.trim(),
+        typeof request.receptor_organizacion === 'string' ? request.receptor_organizacion.trim() || null : null,
+        projectId,
+        request.tipo_necesidad,
+        request.titulo.trim(),
+        request.descripcion.trim(),
+        amount,
+        quantity,
+        request.tipo_necesidad === 'especie' && typeof request.unidad_medida === 'string'
+          ? request.unidad_medida.trim() || null
+          : null,
+        request.fecha_necesaria || null,
+      ]
+    );
+
+    res.status(201).json(rows[0]);
+  } catch (err: any) {
+    console.error('Error registering donation need:', err);
+    res.status(500).json({ error: 'Error al registrar la necesidad de donación' });
   }
 });
 

@@ -192,15 +192,6 @@ export interface EvaluacionCompetenciasCriterios {
 }
 
 export interface EvaluacionCompetenciasItem {
-// KIR-54: Estructura de evaluación de salud física y psicológica (Etapa 5)
-export interface EvaluacionSaludCriterios {
-  apto_fisico?: boolean;
-  apto_psicologico?: boolean;
-  examen_medico_vigente?: boolean;
-  condicion_especifica_atendida?: boolean;
-}
-
-export interface EvaluacionSaludItem {
   etapa_id: number | string;
   postulacion_id: number | string;
   etapa_estado: EtapaEstado;
@@ -217,6 +208,41 @@ export interface EvaluacionSaludItem {
     id: number | string;
     titulo: string;
     ubicacion: string;
+    organizacion_nombre?: string | null;
+  };
+}
+
+// KIR-54: Estructura de evaluación de salud física y psicológica (Etapa 5)
+export interface EvaluacionSaludCriterios {
+  apto_fisico?: boolean;
+  apto_psicologico?: boolean;
+  examen_medico_vigente?: boolean;
+  condicion_especifica_atendida?: boolean;
+}
+
+export interface EvaluacionSaludItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  detalle_criterios: EvaluacionSaludCriterios;
+  puntaje_promedio: number | null;
+  inicial_estado: EtapaEstado | string;
+  tecnica_estado: EtapaEstado | string;
+  personal_estado: EtapaEstado | string;
+  competencias_estado: EtapaEstado | string;
+  puede_evaluar: boolean;
+  postulacion_fecha: string;
+  postulacion_estado: PostulacionEstado;
+  postulante: Postulante & { edad: number; es_mayor_edad: boolean };
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    cupos_disponibles?: number;
+    organizacion_id?: number | string | null;
     organizacion_nombre?: string | null;
   };
 }
@@ -249,23 +275,10 @@ export interface EvaluacionPersonalItem {
   tecnica_estado: EtapaEstado | string;
   puede_evaluar: boolean;
   postulante: Postulante;
-  postulacion_fecha: string;
-  postulacion_estado: PostulacionEstado;
-  inicial_estado: EtapaEstado | string;
-  tecnica_estado: EtapaEstado | string;
-  personal_estado: EtapaEstado | string;
-  competencias_estado: EtapaEstado | string;
-  puede_evaluar: boolean;
-  postulante: Postulante & {
-    edad: number;
-    es_mayor_edad: boolean;
-  };
   proyecto: {
     id: number | string;
     titulo: string;
     ubicacion: string;
-    cupos_disponibles?: number;
-    organizacion_id?: number | string | null;
     organizacion_nombre?: string | null;
   };
 }
@@ -275,6 +288,8 @@ export interface RegistrarEvaluacionPersonalPayload {
   evaluador: string;
   comentarios: string;
   criterios: EvaluacionPersonalCriterios;
+}
+
 export interface RegistrarEvaluacionSaludPayload {
   estado: 'aprobado' | 'observado' | 'rechazado' | 'en_revision';
   evaluador: string;
@@ -453,6 +468,45 @@ export interface CreateDonationPayload {
   descripcion_especie?: string;
   proyecto_destino_id?: string | null;
   recibido_por: string;
+}
+
+// KIR-42: Solicitudes de necesidad de donación y sus receptores.
+export type DonationNeedStatus = 'pendiente' | 'en_revision' | 'atendida' | 'rechazada' | 'cancelada';
+
+export interface DonationNeedRequestPayload {
+  receptor_nombre: string;
+  receptor_email: string;
+  receptor_telefono: string;
+  receptor_organizacion?: string;
+  tipo_necesidad: DonacionTipo;
+  titulo: string;
+  descripcion: string;
+  monto_objetivo?: number | null;
+  cantidad_objetivo?: number | null;
+  unidad_medida?: string;
+  fecha_necesaria?: string;
+  proyecto_destino_id?: number | string | null;
+}
+
+export interface DonationNeedRequestResponse {
+  id: number | string;
+  receptor_id: number | string;
+  proyecto_destino_id?: number | string | null;
+  tipo_necesidad: DonacionTipo;
+  titulo: string;
+  descripcion: string;
+  monto_objetivo?: number | null;
+  cantidad_objetivo?: number | null;
+  unidad_medida?: string | null;
+  fecha_necesaria?: string | null;
+  estado: DonationNeedStatus;
+  created_at: string;
+  receptor: {
+    nombre: string;
+    email: string;
+    telefono: string;
+    organizacion?: string | null;
+  };
 }
 
 export interface DashboardMetrics {
