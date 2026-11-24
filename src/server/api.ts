@@ -15,6 +15,12 @@ import {
   normalizeRecipientEmail,
   validateDonationNeedRequest,
 } from './donation-needs';
+import {
+  buildDonationHistoryConditions,
+  parseDonationHistoryFilters,
+  toDonationHistoryItem,
+  type DonationHistoryRow,
+} from './donation-history';
 
 const router: Router = express.Router();
 
@@ -2927,6 +2933,60 @@ router.patch('/postulaciones/:id/status', async (req: Request, res: Response) =>
 // -------------------------------------------------------------
 // 4. DONACIONES
 // -------------------------------------------------------------
+router.get('/donaciones/historial', async (req: Request, res: Response) => {
+  try {
+    const parsed = parseDonationHistoryFilters(req.query as Record<string, unknown>);
+    if (!parsed.valid) {
+      return res.status(400).json({ error: parsed.error });
+    }
+
+    const { filters } = parsed;
+    const { whereSql, params } = buildDonationHistoryConditions(filters);
+    const summaryRows = await query<any>(
+      `SELECT COUNT(*)::int AS total,
+              COALESCE(SUM(CASE WHEN d.tipo_donacion = 'economica' THEN d.monto_bob ELSE 0 END), 0) AS monto_economico_bob,
+              COUNT(*) FILTER (WHERE d.tipo_donacion = 'especie')::int AS aportes_especie
+       FROM donaciones d
+       LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
+       ${whereSql}`,
+      params
+    );
+
+    const limitPlaceholder = `$${params.length + 1}`;
+    const offsetPlaceholder = `$${params.length + 2}`;
+    const rows = await query<DonationHistoryRow>(
+      `SELECT d.id, d.donante_nombre, d.tipo_donacion, d.monto_bob,
+              d.descripcion_especie, d.proyecto_destino_id, d.recibido_por,
+              d.fecha_recepcion, p.titulo AS proyecto_titulo, p.ubicacion AS proyecto_ubicacion
+       FROM donaciones d
+       LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
+       ${whereSql}
+       ORDER BY d.fecha_recepcion DESC, d.id DESC
+       LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+      [...params, filters.limite, (filters.pagina - 1) * filters.limite]
+    );
+    const summary = summaryRows[0] || { total: 0, monto_economico_bob: 0, aportes_especie: 0 };
+    const total = Number(summary.total);
+
+    res.json({
+      items: rows.map(toDonationHistoryItem),
+      resumen: {
+        total_aportes: total,
+        monto_economico_bob: Number(summary.monto_economico_bob),
+        aportes_especie: Number(summary.aportes_especie),
+      },
+      paginacion: {
+        pagina: filters.pagina,
+        limite: filters.limite,
+        paginas: Math.ceil(total / filters.limite),
+      },
+    });
+  } catch (err: any) {
+    console.error('Error fetching donation history:', err);
+    res.status(500).json({ error: 'Error al consultar el historial de donaciones' });
+  }
+});
+
 router.get('/donaciones', async (req: Request, res: Response) => {
   try {
     const rows = await query(`

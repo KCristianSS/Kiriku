@@ -1,14 +1,23 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { api } from '../api/client';
-import type { DonationNeedRequestPayload, DonationNeedRequestResponse, Proyecto } from '../types';
-import { AlertCircle, CheckCircle2, Heart, Send, Sparkles } from 'lucide-vue-next';
+import type { DonationHistoryResponse, DonationNeedRequestPayload, DonationNeedRequestResponse, Proyecto } from '../types';
+import { AlertCircle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Heart, History, RefreshCw, Search, Send, Sparkles } from 'lucide-vue-next';
 
 const projects = ref<Proyecto[]>([]);
 const loadingProjects = ref(false);
 const submitting = ref(false);
 const error = ref('');
 const result = ref<DonationNeedRequestResponse | null>(null);
+const history = ref<DonationHistoryResponse | null>(null);
+const historyLoading = ref(false);
+const historyError = ref('');
+const historyQuery = ref('');
+const historyType = ref('');
+const historyProject = ref('');
+const historyFrom = ref('');
+const historyTo = ref('');
+const historyPage = ref(1);
 
 const form = reactive<DonationNeedRequestPayload>({
   receptor_nombre: '',
@@ -36,7 +45,33 @@ onMounted(async () => {
   } finally {
     loadingProjects.value = false;
   }
+  await loadHistory();
 });
+
+async function loadHistory(page = 1) {
+  historyLoading.value = true;
+  historyError.value = '';
+  try {
+    history.value = await api.getDonationHistory({
+      q: historyQuery.value.trim() || undefined,
+      tipo: historyType.value ? historyType.value as 'economica' | 'especie' : undefined,
+      proyecto_destino_id: historyProject.value || undefined,
+      fecha_desde: historyFrom.value || undefined,
+      fecha_hasta: historyTo.value || undefined,
+      pagina: page,
+      limite: 10,
+    });
+    historyPage.value = page;
+  } catch (err: any) {
+    historyError.value = err?.response?.data?.error || 'No se pudo cargar el historial de donaciones.';
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleDateString('es-BO', { year: 'numeric', month: 'long', day: 'numeric' });
+}
 
 function resetForm() {
   form.receptor_nombre = '';
@@ -137,5 +172,57 @@ async function submitRequest() {
         <button type="submit" :disabled="submitting" class="inline-flex items-center justify-center gap-2 px-5 py-3 bg-[#EB455F] hover:bg-[#C9334B] text-white text-sm font-semibold rounded-xl transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"><Send class="w-4 h-4" />{{ submitting ? 'Enviando solicitud...' : 'Registrar necesidad' }}</button>
       </footer>
     </form>
+
+    <section class="space-y-5 pt-4" aria-labelledby="donation-history-title">
+      <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        <div>
+          <div class="inline-flex items-center gap-1.5 text-xs font-semibold text-[#C9334B] mb-1"><History class="w-4 h-4" /> Transparencia y trazabilidad</div>
+          <h2 id="donation-history-title" class="text-2xl font-extrabold text-stone-900">Historial de donaciones</h2>
+          <p class="text-sm text-stone-600 mt-1">Consulta los aportes registrados, la fecha de recepción y el proyecto al que fueron destinados.</p>
+        </div>
+        <button type="button" @click="loadHistory(historyPage)" :disabled="historyLoading" class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-stone-300 rounded-xl text-sm font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-50"><RefreshCw class="w-4 h-4" :class="{ 'animate-spin': historyLoading }" />Actualizar historial</button>
+      </div>
+
+      <div v-if="history" class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div class="bg-white rounded-2xl border border-stone-200 p-4"><p class="text-xs text-stone-500">Aportes con estos filtros</p><p class="text-2xl font-extrabold text-stone-900 mt-1">{{ history.resumen.total_aportes }}</p></div>
+        <div class="bg-white rounded-2xl border border-stone-200 p-4"><p class="text-xs text-stone-500">Aportes económicos</p><p class="text-2xl font-extrabold text-[#C9334B] mt-1">{{ history.resumen.monto_economico_bob.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }} Bs.</p></div>
+        <div class="bg-white rounded-2xl border border-stone-200 p-4"><p class="text-xs text-stone-500">Aportes en especie</p><p class="text-2xl font-extrabold text-stone-900 mt-1">{{ history.resumen.aportes_especie }}</p></div>
+      </div>
+
+      <form @submit.prevent="loadHistory(1)" class="bg-white rounded-2xl border border-stone-200 p-4 shadow-xs grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+        <label class="relative sm:col-span-2 lg:col-span-2"><Search class="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" /><input v-model="historyQuery" maxlength="120" placeholder="Donante, proyecto o receptor" class="w-full pl-9 pr-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-[#EB455F]" aria-label="Buscar en el historial" /></label>
+        <select v-model="historyType" class="px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm" aria-label="Filtrar por tipo de donación"><option value="">Todos los tipos</option><option value="economica">Económica</option><option value="especie">En especie</option></select>
+        <select v-model="historyProject" class="px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm" aria-label="Filtrar por proyecto"><option value="">Todos los destinos</option><option v-for="project in projects" :key="project.id" :value="String(project.id)">{{ project.titulo }}</option></select>
+        <label class="text-[11px] font-semibold text-stone-500">Desde<input v-model="historyFrom" type="date" class="mt-1 block w-full px-2.5 py-2 rounded-xl border border-stone-200 bg-stone-50 text-xs" /></label>
+        <label class="text-[11px] font-semibold text-stone-500">Hasta<input v-model="historyTo" type="date" class="mt-1 block w-full px-2.5 py-2 rounded-xl border border-stone-200 bg-stone-50 text-xs" /></label>
+        <div class="lg:col-span-6 flex justify-end"><button type="submit" :disabled="historyLoading" class="inline-flex items-center gap-2 px-5 py-2.5 bg-[#EB455F] hover:bg-[#C9334B] text-white text-sm font-semibold rounded-xl disabled:opacity-50"><Search class="w-4 h-4" />Aplicar filtros</button></div>
+      </form>
+
+      <div v-if="historyError" role="alert" class="p-4 rounded-xl bg-rose-50 border border-rose-200 text-sm text-rose-800 flex items-center gap-2"><AlertCircle class="w-4 h-4" />{{ historyError }}</div>
+      <div v-if="historyLoading && !history" aria-live="polite" class="py-10 text-center text-sm text-stone-500">Cargando historial...</div>
+      <div v-else-if="history && history.items.length" class="space-y-3" aria-live="polite">
+        <article v-for="donation in history.items" :key="donation.id" class="bg-white rounded-2xl border border-stone-200 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" :class="donation.tipo_donacion === 'economica' ? 'bg-rose-50 text-[#C9334B]' : 'bg-amber-50 text-amber-700'"><Heart v-if="donation.tipo_donacion === 'economica'" class="w-5 h-5" /><Sparkles v-else class="w-5 h-5" /></div>
+            <div>
+              <div class="flex flex-wrap items-center gap-2"><h3 class="font-bold text-stone-900">{{ donation.donante_nombre }}</h3><span class="px-2 py-0.5 rounded-full text-[11px] font-semibold" :class="donation.tipo_donacion === 'economica' ? 'bg-rose-50 text-rose-800' : 'bg-amber-50 text-amber-800'">{{ donation.tipo_donacion === 'economica' ? 'Aporte económico' : 'Aporte en especie' }}</span><span class="text-[11px] text-stone-400">Registro #{{ donation.id }}</span></div>
+              <p class="text-sm text-stone-700 mt-1">{{ donation.tipo_donacion === 'economica' ? `${Number(donation.monto_bob).toLocaleString('es-BO', { minimumFractionDigits: 2 })} Bs.` : donation.descripcion_especie }}</p>
+              <p class="text-xs text-stone-500 mt-1">{{ donation.proyecto ? `Destino: ${donation.proyecto.titulo} · ${donation.proyecto.ubicacion}` : 'Destino: Apoyo general' }}</p>
+            </div>
+          </div>
+          <div class="sm:text-right text-xs text-stone-500 sm:min-w-44">
+            <p class="inline-flex sm:justify-end items-center gap-1.5"><CalendarDays class="w-3.5 h-3.5" />{{ formatDate(donation.fecha_recepcion) }}</p>
+            <p class="mt-1">Recibió: <span class="font-semibold text-stone-700">{{ donation.recibido_por }}</span></p>
+          </div>
+        </article>
+
+        <footer class="flex items-center justify-between pt-2">
+          <p class="text-xs text-stone-500">Página {{ history.paginacion.pagina }} de {{ Math.max(1, history.paginacion.paginas) }}</p>
+          <div class="flex gap-2"><button type="button" @click="loadHistory(historyPage - 1)" :disabled="historyPage <= 1 || historyLoading" class="p-2 rounded-lg border border-stone-300 bg-white text-stone-700 disabled:opacity-40" aria-label="Página anterior"><ChevronLeft class="w-4 h-4" /></button><button type="button" @click="loadHistory(historyPage + 1)" :disabled="historyPage >= history.paginacion.paginas || historyLoading" class="p-2 rounded-lg border border-stone-300 bg-white text-stone-700 disabled:opacity-40" aria-label="Página siguiente"><ChevronRight class="w-4 h-4" /></button></div>
+        </footer>
+      </div>
+      <div v-else-if="history && !historyLoading" class="bg-white rounded-2xl border border-stone-200 p-8 text-center"><History class="w-9 h-9 text-stone-300 mx-auto mb-2" /><h3 class="font-bold text-stone-800">No hay donaciones que coincidan</h3><p class="text-sm text-stone-500 mt-1">Prueba cambiando los filtros o consulta de nuevo más adelante.</p></div>
+      <p class="text-[11px] text-stone-400">Por transparencia, el historial muestra datos del aporte y su destino. No se muestran correos electrónicos de donantes.</p>
+    </section>
   </main>
 </template>
