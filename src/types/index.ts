@@ -509,6 +509,35 @@ export interface DonationNeedRequestResponse {
   };
 }
 
+export interface DonationHistoryItem {
+  id: number | string;
+  donante_nombre: string;
+  tipo_donacion: DonacionTipo;
+  monto_bob: number | null;
+  descripcion_especie: string | null;
+  fecha_recepcion: string;
+  recibido_por: string;
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+  } | null;
+}
+
+export interface DonationHistoryResponse {
+  items: DonationHistoryItem[];
+  resumen: {
+    total_aportes: number;
+    monto_economico_bob: number;
+    aportes_especie: number;
+  };
+  paginacion: {
+    pagina: number;
+    limite: number;
+    paginas: number;
+  };
+}
+
 export interface DashboardMetrics {
   totalProyectos: number;
   proyectosAprobados: number;

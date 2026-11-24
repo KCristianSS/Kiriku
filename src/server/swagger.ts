@@ -495,6 +495,26 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
         },
       },
     },
+    '/donaciones/historial': {
+      get: {
+        tags: ['Donaciones'],
+        summary: 'Consultar historial público y trazabilidad de donaciones',
+        description: 'Permite filtrar aportes por texto, tipo, proyecto y fechas. La respuesta omite los correos de donantes.',
+        parameters: [
+          { name: 'q', in: 'query', schema: { type: 'string', maxLength: 120 }, description: 'Busca por donante, persona receptora o proyecto.' },
+          { name: 'tipo', in: 'query', schema: { type: 'string', enum: ['economica', 'especie'] } },
+          { name: 'proyecto_destino_id', in: 'query', schema: { type: 'integer', minimum: 1 } },
+          { name: 'fecha_desde', in: 'query', schema: { type: 'string', format: 'date' } },
+          { name: 'fecha_hasta', in: 'query', schema: { type: 'string', format: 'date' } },
+          { name: 'pagina', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+          { name: 'limite', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 50, default: 20 } },
+        ],
+        responses: {
+          200: { description: 'Aportes ordenados por fecha, con resumen, destino y datos de paginación.' },
+          400: { description: 'Filtros inválidos.' },
+        },
+      },
+    },
     '/necesidades-donacion': {
       post: {
         tags: ['Donaciones'],
