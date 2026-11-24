@@ -269,6 +269,8 @@ onMounted(() => {
           </div>
         </div>
         <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-violet-600 group-hover:translate-x-1 transition-all shrink-0" />
+      </router-link>
+      <router-link
         to="/admin/evaluacion-salud"
         class="bg-white rounded-2xl border border-stone-200 hover:border-[#EB455F] p-5 shadow-xs transition-all flex items-center justify-between group"
       >

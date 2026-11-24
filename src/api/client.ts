@@ -26,6 +26,8 @@ import type {
   ValidarEdadResponse,
   ProposeProjectPayload,
   CreateDonationPayload,
+  DonationNeedRequestPayload,
+  DonationNeedRequestResponse,
   DashboardMetrics,
 } from '../types';
 
@@ -341,6 +343,9 @@ export const api = {
     payload: RegistrarEvaluacionPersonalPayload
   ): Promise<{ message: string; puntaje_promedio: number; estado_general: string }> {
     const res = await apiClient.post(`/evaluaciones/personal/${postulacionId}`, payload);
+    return res.data;
+  },
+
   // KIR-28: Gestión de Evaluación de Salud Física y Psicológica (KIR-55 & KIR-56)
   async getHealthEvaluations(params?: {
     estado?: string;
@@ -423,6 +428,11 @@ export const api = {
 
   async createDonacion(payload: CreateDonationPayload): Promise<Donacion> {
     const res = await apiClient.post<Donacion>('/donaciones', payload);
+    return res.data;
+  },
+
+  async createDonationNeedRequest(payload: DonationNeedRequestPayload): Promise<DonationNeedRequestResponse> {
+    const res = await apiClient.post<DonationNeedRequestResponse>('/necesidades-donacion', payload);
     return res.data;
   },
 
