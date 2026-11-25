@@ -414,6 +414,7 @@ export type DonacionCategoriaEspecie =
   | 'salud_higiene'
   | 'herramientas'
   | 'otros';
+export type DonacionEstadoEntrega = 'recibida' | 'en_preparacion' | 'entrega_parcial' | 'entregada';
 
 export type EntregaEstado = 'programada' | 'en_camino' | 'entregada' | 'verificada';
 
@@ -489,6 +490,7 @@ export interface Donacion {
   fecha_disponible_estimada?: string | null;
   direccion_recojo?: string | null;
   notas_donante?: string | null;
+  estado_entrega?: DonacionEstadoEntrega;
   updated_at?: string;
   proyecto?: Proyecto | null;
   donante?: Donante | null;
@@ -639,6 +641,31 @@ export interface OfferDonationPayload {
 export interface ConfirmDonationReceiptPayload {
   recibido_por: string;
   notas_recepcion?: string;
+}
+
+export interface RegisterDeliveryPayload {
+  receptor_id?: number | string | null;
+  receptor_nombre?: string;
+  receptor_tipo?: ReceptorTipo;
+  receptor_documento?: string;
+  receptor_email?: string;
+  receptor_telefono?: string;
+  receptor_ubicacion?: string;
+  proyecto_id?: number | string | null;
+  organizacion_id?: number | string | null;
+  estado?: EntregaEstado;
+  monto_entregado_bob?: number | null;
+  detalle_bienes_entregados?: string;
+  responsable_entrega: string;
+  recibido_por_receptor: string;
+  fecha_entrega?: string;
+  observaciones?: string;
+}
+
+export interface UpdateDeliveryStatusPayload {
+  estado: EntregaEstado;
+  recibido_por_receptor?: string;
+  observaciones?: string;
 }
 
 export interface DashboardMetrics {

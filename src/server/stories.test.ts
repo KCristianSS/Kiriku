@@ -17,6 +17,7 @@ import {
   normalizeInKindCategory,
   validateDeliveryRegistration,
   validateOfferedDonation,
+  validateDeliveryRegistration,
 } from './donation-traceability';
 import { query, dbPool } from './supabase';
 
@@ -2303,6 +2304,11 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
   });
 });
 
+
+
+
+
+});
 
 
 
