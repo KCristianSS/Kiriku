@@ -1,3 +1,6 @@
+import express, { Request, Response, Router } from 'express';
+import { query, supabaseAdmin } from './supabase';
+import { authenticate, requirePermission, type AuthenticatedRequest } from './authorization';
 import express, { NextFunction, Request, Response, Router } from 'express';
 import { dbPool, isDatabaseConfigured, query, supabaseAdmin } from './supabase';
 import {
@@ -11,6 +14,15 @@ import {
   validatePersonalScores,
 } from './personal-evaluation';
 import {
+  normalizeRecipientEmail,
+  validateDonationNeedRequest,
+} from './donation-needs';
+import {
+  buildDonationHistoryConditions,
+  parseDonationHistoryFilters,
+  toDonationHistoryItem,
+  type DonationHistoryRow,
+} from './donation-history';
   calculateDonationBalance,
   canTransitionDeliveryState,
   deriveDonationDeliveryStatus,
@@ -2961,6 +2973,61 @@ router.patch('/postulaciones/:id/status', async (req: Request, res: Response) =>
 // -------------------------------------------------------------
 // 4. DONACIONES, VÍNCULO DONANTE-RECEPTOR Y TRAZABILIDAD (KIR-32)
 // -------------------------------------------------------------
+router.get('/donaciones/historial', async (req: Request, res: Response) => {
+  try {
+    const parsed = parseDonationHistoryFilters(req.query as Record<string, unknown>);
+    if (!parsed.valid) {
+      return res.status(400).json({ error: parsed.error });
+    }
+
+    const { filters } = parsed;
+    const { whereSql, params } = buildDonationHistoryConditions(filters);
+    const summaryRows = await query<any>(
+      `SELECT COUNT(*)::int AS total,
+              COALESCE(SUM(CASE WHEN d.tipo_donacion = 'economica' THEN d.monto_bob ELSE 0 END), 0) AS monto_economico_bob,
+              COUNT(*) FILTER (WHERE d.tipo_donacion = 'especie')::int AS aportes_especie
+       FROM donaciones d
+       LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
+       ${whereSql}`,
+      params
+    );
+
+    const limitPlaceholder = `$${params.length + 1}`;
+    const offsetPlaceholder = `$${params.length + 2}`;
+    const rows = await query<DonationHistoryRow>(
+      `SELECT d.id, d.donante_nombre, d.tipo_donacion, d.monto_bob,
+              d.descripcion_especie, d.proyecto_destino_id, d.recibido_por,
+              d.fecha_recepcion, p.titulo AS proyecto_titulo, p.ubicacion AS proyecto_ubicacion
+       FROM donaciones d
+       LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
+       ${whereSql}
+       ORDER BY d.fecha_recepcion DESC, d.id DESC
+       LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+      [...params, filters.limite, (filters.pagina - 1) * filters.limite]
+    );
+    const summary = summaryRows[0] || { total: 0, monto_economico_bob: 0, aportes_especie: 0 };
+    const total = Number(summary.total);
+
+    res.json({
+      items: rows.map(toDonationHistoryItem),
+      resumen: {
+        total_aportes: total,
+        monto_economico_bob: Number(summary.monto_economico_bob),
+        aportes_especie: Number(summary.aportes_especie),
+      },
+      paginacion: {
+        pagina: filters.pagina,
+        limite: filters.limite,
+        paginas: Math.ceil(total / filters.limite),
+      },
+    });
+  } catch (err: any) {
+    console.error('Error fetching donation history:', err);
+    res.status(500).json({ error: 'Error al consultar el historial de donaciones' });
+  }
+});
+
+router.get('/donaciones', async (req: Request, res: Response) => {
 function mapEntregaRow(e: any) {
   return {
     id: e.id,
@@ -4030,6 +4097,80 @@ router.patch('/donaciones/entregas/:entregaId', async (req: Request, res: Respon
     res.status(500).json({ error: 'Error al actualizar estado de entrega' });
   } finally {
     client.release();
+  }
+});
+
+// KIR-43: Registrar en una sola operación la necesidad y los datos de su receptor.
+router.post('/necesidades-donacion', async (req: Request, res: Response) => {
+  try {
+    const request = req.body ?? {};
+    const validation = validateDonationNeedRequest(request);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const projectId = request.proyecto_destino_id || null;
+    if (projectId) {
+      const project = await query<{ id: number | string }>(
+        `SELECT id FROM proyectos WHERE id = $1 AND estado = 'aprobado' LIMIT 1`,
+        [projectId]
+      );
+      if (!project.length) {
+        return res.status(400).json({ error: 'El proyecto seleccionado no existe o no está aprobado' });
+      }
+    }
+
+    const amount = request.tipo_necesidad === 'economica' ? Number(request.monto_objetivo) : null;
+    const quantity = request.tipo_necesidad === 'especie' && request.cantidad_objetivo
+      ? Number(request.cantidad_objetivo)
+      : null;
+    const rows = await query(
+      `WITH receptor AS (
+         INSERT INTO receptores_donacion (nombre, email, telefono, organizacion)
+         VALUES ($2, $1, $3, $4)
+         ON CONFLICT (email) DO UPDATE SET
+           nombre = EXCLUDED.nombre,
+           telefono = EXCLUDED.telefono,
+           organizacion = EXCLUDED.organizacion,
+           updated_at = NOW()
+         RETURNING id, nombre, email, telefono, organizacion
+       ), solicitud AS (
+         INSERT INTO necesidades_donacion (
+           receptor_id, proyecto_destino_id, tipo_necesidad, titulo, descripcion,
+           monto_objetivo, cantidad_objetivo, unidad_medida, fecha_necesaria
+         )
+         SELECT id, $5, $6, $7, $8, $9, $10, $11, $12 FROM receptor
+         RETURNING *
+       )
+       SELECT solicitud.*, json_build_object(
+         'nombre', receptor.nombre,
+         'email', receptor.email,
+         'telefono', receptor.telefono,
+         'organizacion', receptor.organizacion
+       ) AS receptor
+       FROM solicitud JOIN receptor ON receptor.id = solicitud.receptor_id`,
+      [
+        normalizeRecipientEmail(request.receptor_email),
+        request.receptor_nombre.trim(),
+        request.receptor_telefono.trim(),
+        typeof request.receptor_organizacion === 'string' ? request.receptor_organizacion.trim() || null : null,
+        projectId,
+        request.tipo_necesidad,
+        request.titulo.trim(),
+        request.descripcion.trim(),
+        amount,
+        quantity,
+        request.tipo_necesidad === 'especie' && typeof request.unidad_medida === 'string'
+          ? request.unidad_medida.trim() || null
+          : null,
+        request.fecha_necesaria || null,
+      ]
+    );
+
+    res.status(201).json(rows[0]);
+  } catch (err: any) {
+    console.error('Error registering donation need:', err);
+    res.status(500).json({ error: 'Error al registrar la necesidad de donación' });
   }
 });
 
