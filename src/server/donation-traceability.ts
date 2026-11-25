@@ -1,4 +1,11 @@
 import type {
+  DonacionCategoriaEspecie,
+  DonacionEstadoEntrega,
+  DonacionModalidadEntrega,
+  DonacionTipo,
+  DonanteTipo,
+  EntregaEstado,
+  OfferDonationPayload,
   DonacionEstadoEntrega,
   DonacionTipo,
   DonanteTipo,
@@ -35,6 +42,22 @@ export const VALID_DELIVERY_TRANSITIONS: Record<EntregaEstado, EntregaEstado[]> 
   verificada: ['verificada'],
 };
 
+export const VALID_DONATION_MODALITIES: readonly DonacionModalidadEntrega[] = [
+  'transferencia_qr',
+  'entrega_centro_acopio',
+  'recojo_domicilio',
+  'coordinacion_directa',
+];
+
+export const VALID_IN_KIND_CATEGORIES: readonly DonacionCategoriaEspecie[] = [
+  'alimentos',
+  'ropa_abrigo',
+  'utiles_escolares',
+  'salud_higiene',
+  'herramientas',
+  'otros',
+];
+
 export function formatDonationCode(id: number | string): string {
   return `KIR-DON-${id}`;
 }
@@ -56,6 +79,23 @@ export function normalizeRecipientType(input?: string | null): ReceptorTipo {
 export function normalizeDeliveryState(input?: string | null): EntregaEstado {
   const val = String(input || 'entregada').trim().toLowerCase() as EntregaEstado;
   return VALID_DELIVERY_STATES.includes(val) ? val : 'entregada';
+}
+
+export function normalizeDonationModality(
+  input?: string | null,
+  tipoDonacion: DonacionTipo | string = 'economica'
+): DonacionModalidadEntrega {
+  const val = String(input || '').trim().toLowerCase() as DonacionModalidadEntrega;
+  if (VALID_DONATION_MODALITIES.includes(val)) {
+    return val;
+  }
+  return tipoDonacion === 'economica' ? 'transferencia_qr' : 'entrega_centro_acopio';
+}
+
+export function normalizeInKindCategory(input?: string | null): DonacionCategoriaEspecie | null {
+  if (!input || !String(input).trim()) return null;
+  const val = String(input).trim().toLowerCase() as DonacionCategoriaEspecie;
+  return VALID_IN_KIND_CATEGORIES.includes(val) ? val : 'otros';
 }
 
 export function canTransitionDeliveryState(
@@ -115,6 +155,11 @@ export function calculateDonationBalance(
 export function deriveDonationDeliveryStatus(
   tipoDonacion: DonacionTipo | string,
   montoTotalBob: number | string | null | undefined,
+  entregas: DeliveryAmountSnapshot[],
+  currentStatus?: DonacionEstadoEntrega | string | null
+): DonacionEstadoEntrega {
+  if (!entregas.length) {
+    return currentStatus === 'ofrecida' ? 'ofrecida' : 'recibida';
   entregas: DeliveryAmountSnapshot[]
 ): DonacionEstadoEntrega {
   if (!entregas.length) {
@@ -238,3 +283,219 @@ export function validateDeliveryRegistration(
     monto_entregado_bob: null,
   };
 }
+
+export interface ValidatedOfferedDonation {
+  donante_nombre: string;
+  donante_tipo: DonanteTipo;
+  donante_documento: string | null;
+  donante_email: string | null;
+  donante_telefono: string | null;
+  donante_ciudad: string | null;
+  tipo_donacion: DonacionTipo;
+  monto_bob: number | null;
+  descripcion_especie: string | null;
+  categoria_especie: DonacionCategoriaEspecie | null;
+  cantidad_especie: number | null;
+  proyecto_destino_id: number | null;
+  modalidad_entrega: DonacionModalidadEntrega;
+  fecha_disponible_estimada: string | null;
+  direccion_recojo: string | null;
+  notas_donante: string | null;
+}
+
+export function validateOfferedDonation(
+  payload: Partial<OfferDonationPayload>,
+  todayYmd?: string
+): { ok: true; data: ValidatedOfferedDonation } | { ok: false; error: string } {
+  const donanteTipo = normalizeDonorType(payload.donante_tipo);
+  const rawNombre = typeof payload.donante_nombre === 'string' ? payload.donante_nombre.trim() : '';
+
+  const donanteNombre =
+    donanteTipo === 'anonimo' && rawNombre.length === 0 ? 'Donante Anónimo' : rawNombre;
+
+  if (donanteNombre.length < 2) {
+    return {
+      ok: false,
+      error: 'El nombre o razón social del donante es obligatorio (mínimo 2 caracteres)',
+    };
+  }
+
+  const email =
+    typeof payload.donante_email === 'string' && payload.donante_email.trim()
+      ? payload.donante_email.trim().toLowerCase()
+      : null;
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return {
+      ok: false,
+      error: 'El correo electrónico del donante no tiene un formato válido',
+    };
+  }
+
+  const telefono =
+    typeof payload.donante_telefono === 'string' && payload.donante_telefono.trim()
+      ? payload.donante_telefono.trim()
+      : null;
+
+  if (donanteTipo !== 'anonimo' && !email && !telefono) {
+    return {
+      ok: false,
+      error: 'Debe ingresar un correo electrónico o teléfono de contacto para coordinar la donación',
+    };
+  }
+
+  const tipoDonacion = String(payload.tipo_donacion || '').trim().toLowerCase();
+  if (tipoDonacion !== 'economica' && tipoDonacion !== 'especie') {
+    return {
+      ok: false,
+      error: 'El tipo de donación debe ser economica o especie',
+    };
+  }
+
+  let montoBob: number | null = null;
+  let descripcionEspecie: string | null = null;
+  let categoriaEspecie: DonacionCategoriaEspecie | null = null;
+  let cantidadEspecie: number | null = null;
+
+  if (tipoDonacion === 'economica') {
+    const monto = Number(payload.monto_bob);
+    if (!Number.isFinite(monto) || monto <= 0) {
+      return {
+        ok: false,
+        error: 'Para donaciones económicas debe indicar un monto ofrecido mayor a 0 Bs.',
+      };
+    }
+    montoBob = Math.round(monto * 100) / 100;
+  } else {
+    const desc =
+      typeof payload.descripcion_especie === 'string' ? payload.descripcion_especie.trim() : '';
+    if (desc.length < 3) {
+      return {
+        ok: false,
+        error: 'Debe describir los bienes ofrecidos en especie (mínimo 3 caracteres)',
+      };
+    }
+    descripcionEspecie = desc;
+    categoriaEspecie = normalizeInKindCategory(payload.categoria_especie) || 'otros';
+
+    if (
+      payload.cantidad_especie !== undefined &&
+      payload.cantidad_especie !== null &&
+      String(payload.cantidad_especie).trim() !== ''
+    ) {
+      const cant = Number(payload.cantidad_especie);
+      if (!Number.isInteger(cant) || cant <= 0) {
+        return {
+          ok: false,
+          error: 'La cantidad estimada de bienes en especie debe ser un número entero positivo',
+        };
+      }
+      cantidadEspecie = cant;
+    }
+  }
+
+  const rawModality = payload.modalidad_entrega
+    ? String(payload.modalidad_entrega).trim().toLowerCase()
+    : '';
+  if (rawModality && !VALID_DONATION_MODALITIES.includes(rawModality as DonacionModalidadEntrega)) {
+    return {
+      ok: false,
+      error:
+        'Modalidad de entrega inválida (use: transferencia_qr, entrega_centro_acopio, recojo_domicilio o coordinacion_directa)',
+    };
+  }
+  const modalidadEntrega = normalizeDonationModality(rawModality, tipoDonacion);
+
+  const direccionRecojo =
+    typeof payload.direccion_recojo === 'string' && payload.direccion_recojo.trim()
+      ? payload.direccion_recojo.trim()
+      : null;
+
+  if (modalidadEntrega === 'recojo_domicilio' && (!direccionRecojo || direccionRecojo.length < 5)) {
+    return {
+      ok: false,
+      error: 'Para solicitar recojo a domicilio debe ingresar la dirección completa (mínimo 5 caracteres)',
+    };
+  }
+
+  let fechaDisponible: string | null = null;
+  if (typeof payload.fecha_disponible_estimada === 'string' && payload.fecha_disponible_estimada.trim()) {
+    const rawDate = payload.fecha_disponible_estimada.trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+      return {
+        ok: false,
+        error: 'La fecha disponible estimada debe tener formato YYYY-MM-DD',
+      };
+    }
+    const parsed = new Date(`${rawDate}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) {
+      return {
+        ok: false,
+        error: 'La fecha disponible estimada no es válida',
+      };
+    }
+    const now = new Date();
+    const refToday =
+      todayYmd ||
+      `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    if (rawDate < refToday) {
+      return {
+        ok: false,
+        error: 'La fecha disponible estimada no puede ser anterior a hoy',
+      };
+    }
+    fechaDisponible = rawDate;
+  }
+
+  let proyectoDestinoId: number | null = null;
+  if (
+    payload.proyecto_destino_id !== undefined &&
+    payload.proyecto_destino_id !== null &&
+    String(payload.proyecto_destino_id).trim() !== ''
+  ) {
+    const pid = Number(payload.proyecto_destino_id);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return {
+        ok: false,
+        error: 'El proyecto destino seleccionado es inválido',
+      };
+    }
+    proyectoDestinoId = pid;
+  }
+
+  const documento =
+    typeof payload.donante_documento === 'string' && payload.donante_documento.trim()
+      ? payload.donante_documento.trim()
+      : null;
+  const ciudad =
+    typeof payload.donante_ciudad === 'string' && payload.donante_ciudad.trim()
+      ? payload.donante_ciudad.trim()
+      : null;
+  const notas =
+    typeof payload.notas_donante === 'string' && payload.notas_donante.trim()
+      ? payload.notas_donante.trim()
+      : null;
+
+  return {
+    ok: true,
+    data: {
+      donante_nombre: donanteNombre,
+      donante_tipo: donanteTipo,
+      donante_documento: documento,
+      donante_email: email,
+      donante_telefono: telefono,
+      donante_ciudad: ciudad,
+      tipo_donacion: tipoDonacion as DonacionTipo,
+      monto_bob: montoBob,
+      descripcion_especie: descripcionEspecie,
+      categoria_especie: categoriaEspecie,
+      cantidad_especie: cantidadEspecie,
+      proyecto_destino_id: proyectoDestinoId,
+      modalidad_entrega: modalidadEntrega,
+      fecha_disponible_estimada: fechaDisponible,
+      direccion_recojo: direccionRecojo,
+      notas_donante: notas,
+    },
+  };
+}
+
