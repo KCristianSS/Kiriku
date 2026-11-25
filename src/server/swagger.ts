@@ -503,6 +503,72 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
         },
       },
     },
+    '/donaciones/ofrecer': {
+      post: {
+        tags: ['Donaciones'],
+        summary: 'Registrar donación ofrecida directamente por un donante (KIR-30 / KIR-47)',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['tipo_donacion'],
+                properties: {
+                  donante_nombre: { type: 'string', example: 'Valeria Mendoza' },
+                  donante_tipo: { type: 'string', enum: ['persona', 'empresa', 'organizacion', 'anonimo'], example: 'persona' },
+                  donante_email: { type: 'string', example: 'valeria@correo.com' },
+                  donante_telefono: { type: 'string', example: '+591 71234567' },
+                  donante_ciudad: { type: 'string', example: 'La Paz' },
+                  tipo_donacion: { type: 'string', enum: ['economica', 'especie'], example: 'especie' },
+                  monto_bob: { type: 'number', example: 350 },
+                  descripcion_especie: { type: 'string', example: '20 frazadas térmicas nuevas' },
+                  categoria_especie: { type: 'string', enum: ['alimentos', 'ropa_abrigo', 'utiles_escolares', 'salud_higiene', 'herramientas', 'otros'] },
+                  cantidad_especie: { type: 'integer', example: 20 },
+                  proyecto_destino_id: { type: 'integer', example: 1 },
+                  modalidad_entrega: { type: 'string', enum: ['transferencia_qr', 'entrega_centro_acopio', 'recojo_domicilio', 'coordinacion_directa'] },
+                  fecha_disponible_estimada: { type: 'string', format: 'date', example: '2026-12-01' },
+                  direccion_recojo: { type: 'string', example: 'Av. Arce #2140, Sopocachi' },
+                  notas_donante: { type: 'string', example: 'Disponible por la tarde' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: 'Donación ofrecida registrada en estado ofrecida con código KIR-DON.' },
+          400: { description: 'Datos inválidos o faltantes en el ofrecimiento.' },
+        },
+      },
+    },
+    '/donaciones/{id}/confirmar-recepcion': {
+      patch: {
+        tags: ['Donaciones'],
+        summary: 'Confirmar recepción en custodia de una donación ofrecida (ofrecida → recibida)',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['recibido_por'],
+                properties: {
+                  recibido_por: { type: 'string', example: 'Kevin Sancalli' },
+                  notas_recepcion: { type: 'string', example: 'Verificado comprobante de transferencia' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'Recepción confirmada, donación lista para trazabilidad y entregas.' },
+          400: { description: 'Estado previo inválido o falta recibido_por.' },
+        },
+      },
+    },
     '/donaciones/donantes': {
       get: {
         tags: ['Donaciones'],
