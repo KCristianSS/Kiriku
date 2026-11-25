@@ -51,6 +51,14 @@ const feedbackError = ref<string | null>(null);
 const showCreateModal = ref(false);
 const showDeliveryModal = ref(false);
 const showTraceModal = ref(false);
+const showConfirmModal = ref(false);
+const selectedDonationForDelivery = ref<Donacion | null>(null);
+const selectedDonationForConfirm = ref<Donacion | null>(null);
+
+const confirmForm = ref({
+  recibido_por: '',
+  notas_recepcion: '',
+});
 const selectedDonationForDelivery = ref<Donacion | null>(null);
 
 // Formulario: Nueva Donación
@@ -107,6 +115,12 @@ const donationStatusMeta: Record<
   DonacionEstadoEntrega,
   { label: string; textClass: string; bgClass: string; borderClass: string }
 > = {
+  ofrecida: {
+    label: 'Ofrecida por donante',
+    textClass: 'text-amber-900',
+    bgClass: 'bg-amber-50',
+    borderClass: 'border-amber-200',
+  },
   recibida: {
     label: 'Recibida en custodia',
     textClass: 'text-stone-700',
@@ -250,10 +264,21 @@ function getProgressPercent(d: Donacion): number {
 }
 
 function canRegisterNewDelivery(d: Donacion): boolean {
+  if (d.estado_entrega === 'ofrecida') return false;
   if (d.tipo_donacion === 'economica') {
     return Number(d.saldo_disponible_bob ?? d.monto_bob ?? 0) > 0.009;
   }
   return true;
+}
+
+function formatModalityLabel(mod?: string | null): string {
+  const map: Record<string, string> = {
+    transferencia_qr: 'Transferencia / QR',
+    entrega_centro_acopio: 'Centro de acopio',
+    recojo_domicilio: 'Recojo a domicilio',
+    coordinacion_directa: 'Coordinación directa',
+  };
+  return (mod && map[mod]) || 'Coordinación directa';
 }
 
 function showBannerSuccess(msg: string) {
@@ -486,6 +511,33 @@ async function advanceDeliveryState(
   }
 }
 
+function openConfirmModal(d: Donacion) {
+  feedbackError.value = null;
+  selectedDonationForConfirm.value = d;
+  confirmForm.value = {
+    recibido_por: '',
+    notas_recepcion: '',
+  };
+  showConfirmModal.value = true;
+}
+
+async function submitConfirmReceipt() {
+  if (!selectedDonationForConfirm.value) return;
+  feedbackError.value = null;
+  try {
+    await store.confirmDonationReceipt(selectedDonationForConfirm.value.id, {
+      recibido_por: confirmForm.value.recibido_por.trim(),
+      notas_recepcion: confirmForm.value.notas_recepcion.trim() || undefined,
+    });
+    showConfirmModal.value = false;
+    showBannerSuccess(
+      `Recepción confirmada para ${selectedDonationForConfirm.value.codigo_donacion || `KIR-DON-${selectedDonationForConfirm.value.id}`}. Ya puedes asignarla a un receptor.`
+    );
+  } catch (err: any) {
+    showBannerError(err?.response?.data?.error || 'No se pudo confirmar la recepción.');
+  }
+}
+
 onMounted(() => {
   loadInitialData();
 });
@@ -511,6 +563,183 @@ onMounted(() => {
             Administra cada aporte económico o en especie, vincula al donante con su receptor final y audita el ciclo completo de entrega.
           </p>
         </div>
+
+        <div class="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            @click="loadInitialData"
+            :disabled="store.loading"
+            class="px-4 py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs sm:text-sm font-semibold rounded-xl transition-colors inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <RefreshCw :class="['w-4 h-4', store.loading ? 'animate-spin' : '']" />
+            <span>Actualizar</span>
+          </button>
+
+          <router-link
+            to="/ofrecer-donacion"
+            class="px-4 py-2.5 bg-[#E8F6F8] hover:bg-[#d5eef1] text-[#1E7B85] border border-[#289EAB]/30 text-xs sm:text-sm font-semibold rounded-xl transition-colors inline-flex items-center gap-2 whitespace-nowrap shrink-0"
+          >
+            <HeartHandshake class="w-4 h-4" />
+            <span>Formulario donantes</span>
+          </router-link>
+
+          <button
+            @click="openCreateModal"
+            class="px-5 py-2.5 bg-[#EB455F] hover:bg-[#d63851] text-white text-xs sm:text-sm font-semibold rounded-xl transition-colors inline-flex items-center gap-2 shadow-xs whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Plus class="w-4 h-4" />
+            <span>Registrar donación</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feedback banners -->
+    <div
+      v-if="feedbackSuccess"
+      role="status"
+      class="bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3"
+    >
+      <div class="flex items-center gap-2.5">
+        <CheckCircle2 class="w-4 h-4 text-emerald-700 shrink-0" />
+        <span>{{ feedbackSuccess }}</span>
+      </div>
+      <button @click="feedbackSuccess = null" class="text-emerald-700 hover:text-emerald-900 p-1 cursor-pointer">
+        <X class="w-4 h-4" />
+      </button>
+    </div>
+
+    <div
+      v-if="feedbackError || store.error"
+      role="alert"
+      class="bg-red-50 border border-red-200 text-red-900 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3"
+    >
+      <div class="flex items-center gap-2.5">
+        <AlertCircle class="w-4 h-4 text-red-700 shrink-0" />
+        <span>{{ feedbackError || store.error }}</span>
+      </div>
+      <button @click="feedbackError = null" class="text-red-700 hover:text-red-900 p-1 cursor-pointer">
+        <X class="w-4 h-4" />
+      </button>
+    </div>
+
+    <!-- KPI Row (Tabular Numerals) -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="bg-white border border-stone-200 rounded-2xl p-5">
+        <div class="flex items-center justify-between text-xs font-medium text-stone-500 mb-2">
+          <span>Fondos Recibidos</span>
+          <Coins class="w-4 h-4 text-[#EB455F]" />
+        </div>
+        <div class="text-2xl font-extrabold text-stone-900 font-mono tabular-nums">
+          {{ formatCurrency(kpiResumen.totalBob) }} Bs.
+        </div>
+        <p class="text-xs text-stone-500 mt-1.5 font-mono tabular-nums">
+          Saldo por entregar: {{ formatCurrency(kpiResumen.saldoPorEntregar) }} Bs.
+        </p>
+      </div>
+
+      <div class="bg-white border border-stone-200 rounded-2xl p-5">
+        <div class="flex items-center justify-between text-xs font-medium text-stone-500 mb-2">
+          <span>Fondos Entregados</span>
+          <Truck class="w-4 h-4 text-[#289EAB]" />
+        </div>
+        <div class="text-2xl font-extrabold text-[#1E7B85] font-mono tabular-nums">
+          {{ formatCurrency(kpiResumen.totalEntregadoBob) }} Bs.
+        </div>
+        <p class="text-xs text-stone-500 mt-1.5">
+          Asignados con vínculo a receptor
+        </p>
+      </div>
+
+      <div class="bg-white border border-stone-200 rounded-2xl p-5">
+        <div class="flex items-center justify-between text-xs font-medium text-stone-500 mb-2">
+          <span>Aportes en Especie</span>
+          <Package class="w-4 h-4 text-[#F58F38]" />
+        </div>
+        <div class="text-2xl font-extrabold text-stone-900 font-mono tabular-nums">
+          {{ kpiResumen.totalEspecie }}
+        </div>
+        <p class="text-xs text-stone-500 mt-1.5">
+          Bienes, insumos y equipamiento
+        </p>
+      </div>
+
+      <div class="bg-white border border-stone-200 rounded-2xl p-5">
+        <div class="flex items-center justify-between text-xs font-medium text-stone-500 mb-2">
+          <span>Entregas Trazadas</span>
+          <Link2 class="w-4 h-4 text-emerald-600" />
+        </div>
+        <div class="text-2xl font-extrabold text-stone-900 font-mono tabular-nums">
+          {{ kpiResumen.totalEntregas }}
+        </div>
+        <p class="text-xs text-stone-500 mt-1.5 font-mono tabular-nums">
+          {{ kpiResumen.completadas }} donaciones completadas
+        </p>
+      </div>
+    </div>
+
+    <!-- Filters & Search Toolbar -->
+    <div class="bg-white border border-stone-200 rounded-2xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+      <div class="relative flex-1 max-w-md">
+        <Search class="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="Buscar por donante, código KIR-DON, receptor o proyecto..."
+          class="w-full pl-10 pr-4 py-2 text-sm bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#289EAB]/30 focus:border-[#289EAB]"
+        />
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3">
+        <!-- Segmented Type Filter -->
+        <div class="inline-flex items-center gap-1 p-1 bg-stone-100 rounded-xl">
+          <button
+            v-for="opt in [
+              { id: 'todos', label: 'Todas' },
+              { id: 'economica', label: 'Económicas' },
+              { id: 'especie', label: 'En especie' },
+            ]"
+            :key="opt.id"
+            @click="tipoFilter = opt.id as any"
+            :class="[
+              'px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer',
+              tipoFilter === opt.id
+                ? 'bg-white text-stone-900 shadow-xs'
+                : 'text-stone-600 hover:text-stone-900',
+            ]"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
+
+        <!-- Estado de Entrega Select -->
+        <select
+          v-model="estadoFilter"
+          aria-label="Filtrar por estado de entrega"
+          class="px-3.5 py-2 text-xs font-semibold bg-stone-50 border border-stone-200 rounded-xl text-stone-700 focus:outline-none focus:ring-2 focus:ring-[#289EAB]/30 focus:border-[#289EAB]"
+        >
+          <option value="todos">Todos los estados</option>
+          <option value="ofrecida">Ofrecida por donante</option>
+          <option value="recibida">Recibida en custodia</option>
+          <option value="en_preparacion">En preparación / ruta</option>
+          <option value="entrega_parcial">Entrega parcial</option>
+          <option value="entregada">Entregada y trazada</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Loading Skeleton -->
+    <div v-if="store.loading && !store.donations.length" class="space-y-4">
+      <div
+        v-for="n in 3"
+        :key="n"
+        class="bg-white border border-stone-200 rounded-2xl p-6 animate-pulse space-y-3"
+      >
+        <div class="h-4 bg-stone-200 rounded w-1/4"></div>
+        <div class="h-5 bg-stone-100 rounded w-2/3"></div>
+        <div class="h-4 bg-stone-100 rounded w-1/2"></div>
+      </div>
+    </div>
+
 
         <div class="flex flex-wrap items-center gap-2.5 shrink-0">
           <button
@@ -797,6 +1026,12 @@ onMounted(() => {
                 ></div>
               </div>
               <div class="text-xs text-stone-500">
+                <template v-if="d.recibido_por">
+                  Recibido por: <span class="font-medium text-stone-700">{{ d.recibido_por }}</span>
+                </template>
+                <template v-else>
+                  Modalidad: <span class="font-medium text-amber-800">{{ formatModalityLabel(d.modalidad_entrega) }}</span>
+                </template>
                 Recibido por: <span class="font-medium text-stone-700">{{ d.recibido_por }}</span>
               </div>
             </template>
@@ -804,6 +1039,22 @@ onMounted(() => {
             <template v-else>
               <div class="text-sm font-bold text-stone-900 leading-snug">
                 {{ d.descripcion_especie }}
+                <span v-if="d.cantidad_especie" class="font-mono text-xs text-stone-600">
+                  ({{ d.cantidad_especie }} u.)
+                </span>
+              </div>
+              <div class="text-xs text-stone-500">
+                <template v-if="d.recibido_por">
+                  Recibido por: <span class="font-medium text-stone-700">{{ d.recibido_por }}</span>
+                </template>
+                <template v-else>
+                  Modalidad: <span class="font-medium text-amber-800">{{ formatModalityLabel(d.modalidad_entrega) }}</span>
+                </template>
+              </div>
+            </template>
+            <div v-if="d.direccion_recojo" class="text-xs text-stone-500">
+              Recojo en: <span class="text-stone-700">{{ d.direccion_recojo }}</span>
+            </div>
               </div>
               <div class="text-xs text-stone-500">
                 Recibido por: <span class="font-medium text-stone-700">{{ d.recibido_por }}</span>
@@ -861,6 +1112,15 @@ onMounted(() => {
             >
               <Eye class="w-3.5 h-3.5" />
               <span>Ver trazabilidad</span>
+            </button>
+
+            <button
+              v-if="d.estado_entrega === 'ofrecida'"
+              @click="openConfirmModal(d)"
+              class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-xl transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <CheckCircle2 class="w-3.5 h-3.5" />
+              <span>Confirmar recepción</span>
             </button>
 
             <button
@@ -1436,6 +1696,13 @@ onMounted(() => {
               }}
             </div>
             <div class="text-xs text-stone-600 space-y-0.5">
+              <div>
+                {{
+                  store.activeTraceability.donacion.recibido_por
+                    ? `Recibido por: ${store.activeTraceability.donacion.recibido_por}`
+                    : `Estado: Ofrecida (${formatModalityLabel(store.activeTraceability.donacion.modalidad_entrega)})`
+                }}
+              </div>
               <div>Recibido por: {{ store.activeTraceability.donacion.recibido_por }}</div>
               <div>Fecha: {{ formatDate(store.activeTraceability.donacion.fecha_recepcion) }}</div>
               <div v-if="store.activeTraceability.proyecto_destino">
@@ -1518,6 +1785,120 @@ onMounted(() => {
               <p v-if="e.observaciones" class="text-xs text-stone-500 bg-stone-50 rounded-lg px-3 py-2">
                 {{ e.observaciones }}
               </p>
+
+              <!-- Advance delivery state controls -->
+              <div v-if="e.estado !== 'verificada'" class="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  v-if="e.estado === 'programada'"
+                  @click="advanceDeliveryState(e.id, e.donacion_id, 'en_camino')"
+                  :disabled="store.submitting"
+                  class="px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                >
+                  Marcar en camino
+                </button>
+                <button
+                  v-if="e.estado === 'programada' || e.estado === 'en_camino'"
+                  @click="advanceDeliveryState(e.id, e.donacion_id, 'entregada')"
+                  :disabled="store.submitting"
+                  class="px-3 py-1 bg-[#E8F6F8] hover:bg-[#d4eef2] text-[#1E7B85] text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                >
+                  Confirmar entrega
+                </button>
+                <button
+                  v-if="e.estado === 'entregada'"
+                  @click="advanceDeliveryState(e.id, e.donacion_id, 'verificada')"
+                  :disabled="store.submitting"
+                  class="px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold rounded-lg inline-flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <ShieldCheck class="w-3.5 h-3.5" />
+                  <span>Verificar entrega</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================ -->
+    <!-- MODAL 4: CONFIRMAR RECEPCIÓN DE DONACIÓN OFRECIDA (KIR-30) -->
+    <!-- ================================================================ -->
+    <div
+      v-if="showConfirmModal && selectedDonationForConfirm"
+      class="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+    >
+      <div class="bg-white rounded-2xl border border-stone-200 max-w-lg w-full p-6 sm:p-7 shadow-xl my-8 space-y-5">
+        <div class="flex items-start justify-between gap-4 pb-3 border-b border-stone-100">
+          <div>
+            <h2 class="text-lg font-bold text-stone-900">Confirmar Recepción de Donación Ofrecida</h2>
+            <p class="text-xs text-stone-500 mt-0.5">
+              {{ selectedDonationForConfirm.codigo_donacion || `KIR-DON-${selectedDonationForConfirm.id}` }}
+              · Donante: <span class="font-semibold text-stone-800">{{ selectedDonationForConfirm.donante_nombre }}</span>
+            </p>
+          </div>
+          <button
+            @click="showConfirmModal = false"
+            class="p-1.5 text-stone-400 hover:text-stone-700 rounded-lg cursor-pointer"
+          >
+            <X class="w-5 h-5" />
+          </button>
+        </div>
+
+        <form @submit.prevent="submitConfirmReceipt" class="space-y-4">
+          <div class="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-xs text-amber-900 space-y-1">
+            <div>
+              <strong>Modalidad ofrecida:</strong> {{ formatModalityLabel(selectedDonationForConfirm.modalidad_entrega) }}
+            </div>
+            <div v-if="selectedDonationForConfirm.direccion_recojo">
+              <strong>Dirección de recojo:</strong> {{ selectedDonationForConfirm.direccion_recojo }}
+            </div>
+            <div v-if="selectedDonationForConfirm.notas_donante">
+              <strong>Notas del donante:</strong> {{ selectedDonationForConfirm.notas_donante }}
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-stone-700 mb-1">
+              Recibido / Verificado en Kirikú por *
+            </label>
+            <input
+              v-model="confirmForm.recibido_por"
+              required
+              type="text"
+              placeholder="Nombre completo del responsable de recepción"
+              class="w-full px-3.5 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none focus:border-[#289EAB]"
+            />
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-stone-700 mb-1">
+              Observaciones de recepción (opcional)
+            </label>
+            <textarea
+              v-model="confirmForm.notas_recepcion"
+              rows="2"
+              placeholder="Ej. Transferencia verificada / Bienes recibidos completos en centro de acopio"
+              class="w-full px-3.5 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none focus:border-[#289EAB]"
+            ></textarea>
+          </div>
+
+          <div class="flex items-center justify-end gap-2.5 pt-3 border-t border-stone-100">
+            <button
+              type="button"
+              @click="showConfirmModal = false"
+              class="px-4 py-2 text-xs font-semibold text-stone-600 hover:bg-stone-100 rounded-xl cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              :disabled="store.submitting"
+              class="px-5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+            >
+              {{ store.submitting ? 'Confirmando...' : 'Confirmar recepción en custodia' }}
+            </button>
+          </div>
+        </form>
 
               <!-- Advance delivery state controls -->
               <div v-if="e.estado !== 'verificada'" class="flex flex-wrap items-center gap-2 pt-1">

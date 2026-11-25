@@ -397,6 +397,23 @@ export type DonanteTipo = 'persona' | 'empresa' | 'organizacion' | 'anonimo';
 
 export type ReceptorTipo = 'proyecto' | 'organizacion' | 'comunidad' | 'persona';
 
+export type DonacionEstadoEntrega = 'ofrecida' | 'recibida' | 'en_preparacion' | 'entrega_parcial' | 'entregada';
+
+export type DonacionOrigenRegistro = 'oferta_donante' | 'recepcion_interna';
+
+export type DonacionModalidadEntrega =
+  | 'transferencia_qr'
+  | 'entrega_centro_acopio'
+  | 'recojo_domicilio'
+  | 'coordinacion_directa';
+
+export type DonacionCategoriaEspecie =
+  | 'alimentos'
+  | 'ropa_abrigo'
+  | 'utiles_escolares'
+  | 'salud_higiene'
+  | 'herramientas'
+  | 'otros';
 export type DonacionEstadoEntrega = 'recibida' | 'en_preparacion' | 'entrega_parcial' | 'entregada';
 
 export type EntregaEstado = 'programada' | 'en_camino' | 'entregada' | 'verificada';
@@ -461,9 +478,18 @@ export interface Donacion {
   tipo_donacion: DonacionTipo;
   monto_bob?: number | null;
   descripcion_especie?: string | null;
+  categoria_especie?: DonacionCategoriaEspecie | string | null;
+  cantidad_especie?: number | null;
   proyecto_destino_id?: number | string | null;
-  recibido_por: string;
+  recibido_por?: string | null;
   fecha_recepcion: string;
+  fecha_confirmacion_recepcion?: string | null;
+  estado_entrega?: DonacionEstadoEntrega;
+  origen_registro?: DonacionOrigenRegistro | string;
+  modalidad_entrega?: DonacionModalidadEntrega | string | null;
+  fecha_disponible_estimada?: string | null;
+  direccion_recojo?: string | null;
+  notas_donante?: string | null;
   estado_entrega?: DonacionEstadoEntrega;
   updated_at?: string;
   proyecto?: Proyecto | null;
@@ -593,6 +619,55 @@ export interface UpdateDeliveryStatusPayload {
   observaciones?: string;
 }
 
+export interface OfferDonationPayload {
+  donante_nombre?: string;
+  donante_tipo?: DonanteTipo;
+  donante_documento?: string;
+  donante_email?: string;
+  donante_telefono?: string;
+  donante_ciudad?: string;
+  tipo_donacion: DonacionTipo;
+  monto_bob?: number;
+  descripcion_especie?: string;
+  categoria_especie?: DonacionCategoriaEspecie | string;
+  cantidad_especie?: number | null;
+  proyecto_destino_id?: string | number | null;
+  modalidad_entrega?: DonacionModalidadEntrega;
+  fecha_disponible_estimada?: string;
+  direccion_recojo?: string;
+  notas_donante?: string;
+}
+
+export interface ConfirmDonationReceiptPayload {
+  recibido_por: string;
+  notas_recepcion?: string;
+}
+
+export interface RegisterDeliveryPayload {
+  receptor_id?: number | string | null;
+  receptor_nombre?: string;
+  receptor_tipo?: ReceptorTipo;
+  receptor_documento?: string;
+  receptor_email?: string;
+  receptor_telefono?: string;
+  receptor_ubicacion?: string;
+  proyecto_id?: number | string | null;
+  organizacion_id?: number | string | null;
+  estado?: EntregaEstado;
+  monto_entregado_bob?: number | null;
+  detalle_bienes_entregados?: string;
+  responsable_entrega: string;
+  recibido_por_receptor: string;
+  fecha_entrega?: string;
+  observaciones?: string;
+}
+
+export interface UpdateDeliveryStatusPayload {
+  estado: EntregaEstado;
+  recibido_por_receptor?: string;
+  observaciones?: string;
+}
+
 export interface DashboardMetrics {
   totalProyectos: number;
   proyectosAprobados: number;
@@ -605,6 +680,7 @@ export interface DashboardMetrics {
   postulacionesReenganche?: number;
   totalDonacionesBob: number;
   totalDonacionesEspecie: number;
+  totalDonacionesOfrecidas?: number;
   totalDonacionesEntregadoBob?: number;
   totalEntregasRegistradas?: number;
 }

@@ -13,6 +13,10 @@ import {
   calculateDonationBalance,
   canTransitionDeliveryState,
   deriveDonationDeliveryStatus,
+  normalizeDonationModality,
+  normalizeInKindCategory,
+  validateDeliveryRegistration,
+  validateOfferedDonation,
   validateDeliveryRegistration,
 } from './donation-traceability';
 import { query, dbPool } from './supabase';
@@ -2164,6 +2168,146 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
       }
     });
   });
+
+  // ============================================================================
+  // KIR-30: Registrar donación ofrecida (KIR-46..KIR-49)
+  // ============================================================================
+  describe('KIR-30: Registrar donación ofrecida', () => {
+    it('KIR-46: Modelo de donaciones ofrecidas (columnas en Supabase y reglas de validación)', async () => {
+      const cols = await query<{ column_name: string; is_nullable: string }>(
+        `SELECT column_name, is_nullable
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'donaciones'
+           AND column_name IN (
+             'recibido_por',
+             'origen_registro',
+             'modalidad_entrega',
+             'fecha_disponible_estimada',
+             'direccion_recojo',
+             'notas_donante',
+             'categoria_especie',
+             'cantidad_especie',
+             'fecha_confirmacion_recepcion'
+           )`
+      );
+      const colMap = new Map(cols.map((c) => [c.column_name, c.is_nullable]));
+      assert.equal(colMap.get('recibido_por'), 'YES', 'recibido_por debe permitir NULL para donaciones ofrecidas');
+      assert.ok(colMap.has('origen_registro'), 'Debe existir origen_registro');
+      assert.ok(colMap.has('modalidad_entrega'), 'Debe existir modalidad_entrega');
+      assert.ok(colMap.has('direccion_recojo'), 'Debe existir direccion_recojo');
+      assert.ok(colMap.has('categoria_especie'), 'Debe existir categoria_especie');
+
+      assert.equal(normalizeDonationModality(undefined, 'economica'), 'transferencia_qr');
+      assert.equal(normalizeInKindCategory('alimentos'), 'alimentos');
+
+      const missingContact = validateOfferedDonation({
+        donante_nombre: 'Juan Pérez',
+        donante_tipo: 'persona',
+        tipo_donacion: 'economica',
+        monto_bob: 200,
+      });
+      assert.equal(missingContact.ok, false, 'Debe exigir correo o teléfono para donante identificado');
+    });
+
+    it('KIR-47 & KIR-49: Flujo HTTP + BD completo de donación ofrecida y confirmación de recepción', async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      const createdDonationIds: number[] = [];
+      const createdDonorIds: number[] = [];
+
+      try {
+        // 1. Recojo a domicilio sin dirección -> 400
+        const invalidPickupRes = await fetch(`${baseUrl}/donaciones/ofrecer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            donante_nombre: `Valeria Offer ${stamp}`,
+            donante_tipo: 'persona',
+            donante_telefono: '+591 71234567',
+            tipo_donacion: 'especie',
+            descripcion_especie: '15 frazadas térmicas',
+            modalidad_entrega: 'recojo_domicilio',
+          }),
+        });
+        assert.equal(invalidPickupRes.status, 400, 'Recojo a domicilio sin dirección debe ser rechazado');
+
+        // 2. Registrar donación económica ofrecida -> 201 en estado 'ofrecida'
+        const econOfferRes = await fetch(`${baseUrl}/donaciones/ofrecer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            donante_nombre: `Empresa Aliada ${stamp}`,
+            donante_tipo: 'empresa',
+            donante_email: `aliada.${stamp}@kiriku.test`,
+            tipo_donacion: 'economica',
+            monto_bob: 750,
+            modalidad_entrega: 'transferencia_qr',
+            notas_donante: 'Comprobante disponible tras confirmación',
+          }),
+        });
+        assert.equal(econOfferRes.status, 201);
+        const econOfferJson = (await econOfferRes.json()) as any;
+        const donId = econOfferJson.donacion.id;
+        createdDonationIds.push(donId);
+        if (econOfferJson.donacion.donante_id) createdDonorIds.push(econOfferJson.donacion.donante_id);
+
+        assert.equal(econOfferJson.donacion.estado_entrega, 'ofrecida');
+        assert.equal(econOfferJson.donacion.origen_registro, 'oferta_donante');
+        assert.equal(econOfferJson.donacion.recibido_por, null);
+        assert.equal(econOfferJson.donacion.codigo_donacion, `KIR-DON-${donId}`);
+
+        // 3. No debe permitir asignar entrega a receptor mientras siga en 'ofrecida' -> 400
+        const prematureDeliveryRes = await fetch(`${baseUrl}/donaciones/${donId}/entregas`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receptor_nombre: 'Comunidad Destino',
+            monto_entregado_bob: 200,
+            responsable_entrega: 'Logística',
+            recibido_por_receptor: 'Ana',
+          }),
+        });
+        assert.equal(prematureDeliveryRes.status, 400);
+
+        // 4. Confirmar recepción en custodia -> 200 y pasa a 'recibida'
+        const confirmRes = await fetch(`${baseUrl}/donaciones/${donId}/confirmar-recepcion`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            recibido_por: 'Tesorería Kirikú',
+            notas_recepcion: 'Transferencia verificada en cuenta',
+          }),
+        });
+        assert.equal(confirmRes.status, 200);
+        const confirmJson = (await confirmRes.json()) as any;
+        assert.equal(confirmJson.donacion.estado_entrega, 'recibida');
+        assert.equal(confirmJson.donacion.recibido_por, 'Tesorería Kirikú');
+      } finally {
+        server.close();
+        if (createdDonationIds.length) {
+          await query('DELETE FROM donaciones WHERE id = ANY($1::int[])', [createdDonationIds]);
+        }
+        if (createdDonorIds.length) {
+          await query('DELETE FROM donantes WHERE id = ANY($1::int[])', [createdDonorIds]);
+        }
+      }
+    });
+  });
+});
+
+
+
+
+
 });
 
 

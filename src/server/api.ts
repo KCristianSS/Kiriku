@@ -20,6 +20,7 @@ import {
   normalizeDonorType,
   normalizeRecipientType,
   validateDeliveryRegistration,
+  validateOfferedDonation,
 } from './donation-traceability';
 import { authenticate, requirePermission, type AuthenticatedRequest } from './authorization';
 
@@ -3020,6 +3021,25 @@ router.get('/donaciones/donantes', async (_req: Request, res: Response) => {
 router.get('/donaciones/receptores', async (_req: Request, res: Response) => {
   try {
     const rows = await query(`
+  try {
+    const rows = await query(`
+      SELECT dn.*, COUNT(d.id)::int AS total_donaciones
+      FROM donantes dn
+      LEFT JOIN donaciones d ON d.donante_id = dn.id
+      GROUP BY dn.id
+      ORDER BY dn.created_at DESC, dn.id DESC
+      LIMIT 100
+    `);
+    res.json(rows);
+  } catch (err: any) {
+    console.error('Error fetching donantes:', err);
+    res.status(500).json({ error: 'Error al consultar donantes registrados' });
+  }
+});
+
+router.get('/donaciones/receptores', async (_req: Request, res: Response) => {
+  try {
+    const rows = await query(`
       SELECT r.*,
              p.titulo AS proyecto_titulo,
              o.nombre AS organizacion_nombre
@@ -3042,6 +3062,8 @@ router.get('/donaciones', async (req: Request, res: Response) => {
     const tipoFilter = typeof req.query.tipo === 'string' ? req.query.tipo.trim() : '';
     const estadoEntregaFilter =
       typeof req.query.estado_entrega === 'string' ? req.query.estado_entrega.trim() : '';
+    const origenFilter =
+      typeof req.query.origen === 'string' ? req.query.origen.trim() : '';
 
     const conditions: string[] = [];
     const params: any[] = [];
@@ -3053,10 +3075,16 @@ router.get('/donaciones', async (req: Request, res: Response) => {
 
     if (
       estadoEntregaFilter &&
+      ['ofrecida', 'recibida', 'en_preparacion', 'entrega_parcial', 'entregada'].includes(estadoEntregaFilter)
       ['recibida', 'en_preparacion', 'entrega_parcial', 'entregada'].includes(estadoEntregaFilter)
     ) {
       params.push(estadoEntregaFilter);
       conditions.push(`COALESCE(d.estado_entrega, 'recibida') = $${params.length}`);
+    }
+
+    if (origenFilter && ['oferta_donante', 'recepcion_interna'].includes(origenFilter)) {
+      params.push(origenFilter);
+      conditions.push(`COALESCE(d.origen_registro, 'recepcion_interna') = $${params.length}`);
     }
 
     if (search) {
@@ -3138,6 +3166,12 @@ router.get('/donaciones', async (req: Request, res: Response) => {
     const formatted = donationsRows.map((r: any) => {
       const entregas = entregasByDonation.get(r.id) || [];
       const balance = calculateDonationBalance(r.tipo_donacion, r.monto_bob, entregas);
+      const derivedStatus = deriveDonationDeliveryStatus(
+        r.tipo_donacion,
+        r.monto_bob,
+        entregas,
+        r.estado_entrega
+      );
       const derivedStatus = deriveDonationDeliveryStatus(r.tipo_donacion, r.monto_bob, entregas);
 
       return {
@@ -3247,6 +3281,9 @@ router.get('/donaciones/:id/trazabilidad', async (req: Request, res: Response) =
 
     const entregas = entregasRows.map(mapEntregaRow);
     const balance = calculateDonationBalance(d.tipo_donacion, d.monto_bob, entregas);
+    const estadoEntrega =
+      d.estado_entrega ||
+      deriveDonationDeliveryStatus(d.tipo_donacion, d.monto_bob, entregas, d.estado_entrega);
     const estadoEntrega = d.estado_entrega || deriveDonationDeliveryStatus(d.tipo_donacion, d.monto_bob, entregas);
     const receptoresUnicos = new Set(entregas.map((e) => e.receptor_id));
 
@@ -3456,6 +3493,231 @@ router.post('/donaciones', async (req: Request, res: Response) => {
   }
 });
 
+// KIR-30 / KIR-47: Registrar donación ofrecida directamente por un donante
+router.post('/donaciones/ofrecer', async (req: Request, res: Response) => {
+  const client = await dbPool.connect();
+  try {
+    const validation = validateOfferedDonation(req.body || {});
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const v = validation.data;
+    await client.query('BEGIN');
+
+    let proyectoObj: any = null;
+    if (v.proyecto_destino_id) {
+      const pRows = await client.query(
+        'SELECT id, titulo, ubicacion, estado FROM proyectos WHERE id = $1 LIMIT 1',
+        [v.proyecto_destino_id]
+      );
+      if (!pRows.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'El proyecto destino seleccionado no existe' });
+      }
+      proyectoObj = {
+        id: pRows.rows[0].id,
+        titulo: pRows.rows[0].titulo,
+        ubicacion: pRows.rows[0].ubicacion,
+      };
+    }
+
+    // Buscar donante existente por documento o correo (si no es anónimo), o registrar nuevo donante
+    let donanteRow: any = null;
+    if (v.donante_tipo !== 'anonimo') {
+      if (v.donante_documento) {
+        const byDoc = await client.query(
+          'SELECT * FROM donantes WHERE LOWER(TRIM(documento_identidad)) = LOWER($1) LIMIT 1',
+          [v.donante_documento]
+        );
+        if (byDoc.rows.length) donanteRow = byDoc.rows[0];
+      }
+      if (!donanteRow && v.donante_email) {
+        const byEmail = await client.query(
+          'SELECT * FROM donantes WHERE LOWER(TRIM(email)) = LOWER($1) LIMIT 1',
+          [v.donante_email]
+        );
+        if (byEmail.rows.length) donanteRow = byEmail.rows[0];
+      }
+    }
+
+    if (donanteRow) {
+      const updDonante = await client.query(
+        `UPDATE donantes
+         SET nombre = $1,
+             tipo_donante = $2,
+             documento_identidad = COALESCE($3, documento_identidad),
+             email = COALESCE($4, email),
+             telefono = COALESCE($5, telefono),
+             ciudad = COALESCE($6, ciudad)
+         WHERE id = $7
+         RETURNING *`,
+        [
+          v.donante_nombre,
+          v.donante_tipo,
+          v.donante_documento,
+          v.donante_email,
+          v.donante_telefono,
+          v.donante_ciudad,
+          donanteRow.id,
+        ]
+      );
+      donanteRow = updDonante.rows[0];
+    } else {
+      const insDonante = await client.query(
+        `INSERT INTO donantes (nombre, tipo_donante, documento_identidad, email, telefono, ciudad)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [
+          v.donante_nombre,
+          v.donante_tipo,
+          v.donante_documento,
+          v.donante_email,
+          v.donante_telefono,
+          v.donante_ciudad,
+        ]
+      );
+      donanteRow = insDonante.rows[0];
+    }
+
+    const insDon = await client.query(
+      `INSERT INTO donaciones (
+         donante_id, donante_nombre, donante_tipo, donante_documento,
+         donante_email, donante_telefono, tipo_donacion,
+         monto_bob, descripcion_especie, categoria_especie, cantidad_especie,
+         proyecto_destino_id, recibido_por, fecha_recepcion,
+         estado_entrega, origen_registro, modalidad_entrega,
+         fecha_disponible_estimada, direccion_recojo, notas_donante, updated_at
+       ) VALUES (
+         $1, $2, $3, $4,
+         $5, $6, $7,
+         $8, $9, $10, $11,
+         $12, NULL, NOW(),
+         'ofrecida', 'oferta_donante', $13,
+         $14, $15, $16, NOW()
+       )
+       RETURNING *`,
+      [
+        donanteRow.id,
+        v.donante_nombre,
+        v.donante_tipo,
+        v.donante_documento,
+        v.donante_email,
+        v.donante_telefono,
+        v.tipo_donacion,
+        v.monto_bob,
+        v.descripcion_especie,
+        v.categoria_especie,
+        v.cantidad_especie,
+        v.proyecto_destino_id,
+        v.modalidad_entrega,
+        v.fecha_disponible_estimada,
+        v.direccion_recojo,
+        v.notas_donante,
+      ]
+    );
+
+    const createdId = insDon.rows[0].id;
+    const codigoDonacion = formatDonationCode(createdId);
+
+    const updatedDon = await client.query(
+      `UPDATE donaciones SET codigo_donacion = $1 WHERE id = $2 RETURNING *`,
+      [codigoDonacion, createdId]
+    );
+
+    await client.query('COMMIT');
+
+    const row = updatedDon.rows[0];
+    res.status(201).json({
+      message: `¡Gracias! Tu donación ofrecida fue registrada con el código ${codigoDonacion}. Nuestro equipo coordinará la recepción según la modalidad elegida.`,
+      donacion: {
+        ...row,
+        monto_bob: row.monto_bob !== null && row.monto_bob !== undefined ? Number(row.monto_bob) : null,
+        codigo_donacion: codigoDonacion,
+        estado_entrega: 'ofrecida',
+        origen_registro: 'oferta_donante',
+        donante: donanteRow,
+        proyecto: proyectoObj,
+        entregas: [],
+        entregas_count: 0,
+        monto_entregado_total: 0,
+        saldo_disponible_bob: row.tipo_donacion === 'economica' ? Number(row.monto_bob || 0) : 0,
+        ultimo_receptor: null,
+      },
+    });
+  } catch (err: any) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Error offering donacion:', err);
+    res.status(500).json({ error: 'Error al registrar la donación ofrecida' });
+  } finally {
+    client.release();
+  }
+});
+
+// Confirmar recepción de una donación ofrecida (pasa de 'ofrecida' a 'recibida')
+router.patch('/donaciones/:id/confirmar-recepcion', async (req: Request, res: Response) => {
+  try {
+    const donacionId = Number(req.params.id);
+    if (!Number.isInteger(donacionId) || donacionId <= 0) {
+      return res.status(400).json({ error: 'ID de donación inválido' });
+    }
+
+    const recibidoPor =
+      typeof req.body?.recibido_por === 'string' ? req.body.recibido_por.trim() : '';
+    if (recibidoPor.length < 2) {
+      return res.status(400).json({
+        error: 'Debe indicar el nombre de la persona de Kirikú que recibe o verifica la donación',
+      });
+    }
+
+    const donRows = await query('SELECT * FROM donaciones WHERE id = $1 LIMIT 1', [donacionId]);
+    if (!donRows.length) {
+      return res.status(404).json({ error: 'Donación no encontrada' });
+    }
+
+    const donacion = donRows[0];
+    if (donacion.estado_entrega && donacion.estado_entrega !== 'ofrecida') {
+      return res.status(400).json({
+        error: `La donación ya fue confirmada (estado actual: ${donacion.estado_entrega})`,
+      });
+    }
+
+    const notasRecepcion =
+      typeof req.body?.notas_recepcion === 'string' && req.body.notas_recepcion.trim()
+        ? req.body.notas_recepcion.trim()
+        : null;
+
+    const updated = await query(
+      `UPDATE donaciones
+       SET estado_entrega = 'recibida',
+           recibido_por = $1,
+           fecha_confirmacion_recepcion = NOW(),
+           notas_donante = CASE
+             WHEN $2::text IS NULL THEN notas_donante
+             WHEN notas_donante IS NULL OR notas_donante = '' THEN $2::text
+             ELSE notas_donante || ' | Recepción: ' || $2::text
+           END,
+           updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [recibidoPor, notasRecepcion, donacionId]
+    );
+
+    const row = updated[0];
+    res.json({
+      message: 'Recepción de donación confirmada correctamente. Ya puedes vincular un receptor y registrar entregas.',
+      donacion: {
+        ...row,
+        monto_bob: row.monto_bob !== null && row.monto_bob !== undefined ? Number(row.monto_bob) : null,
+        codigo_donacion: row.codigo_donacion || formatDonationCode(row.id),
+      },
+    });
+  } catch (err: any) {
+    console.error('Error confirming donation receipt:', err);
+    res.status(500).json({ error: 'Error al confirmar la recepción de la donación' });
+  }
+});
+
 router.post('/donaciones/:id/entregas', async (req: Request, res: Response) => {
   const client = await dbPool.connect();
   try {
@@ -3469,6 +3731,12 @@ router.post('/donaciones/:id/entregas', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Donación no encontrada' });
     }
     const donacion = donRows.rows[0];
+
+    if (donacion.estado_entrega === 'ofrecida') {
+      return res.status(400).json({
+        error: 'Esta donación sigue en estado "ofrecida". Confirma primero su recepción en custodia antes de asignarla a un receptor.',
+      });
+    }
 
     const existingEntregasRows = await client.query(
       'SELECT id, estado, monto_entregado_bob FROM entregas_donaciones WHERE donacion_id = $1',
@@ -3778,6 +4046,15 @@ router.get('/metrics', async (req: Request, res: Response) => {
     const appsEnProceso = await query("SELECT COUNT(*) as c FROM postulaciones WHERE estado_general = 'en_proceso'");
     const appsAprobadas = await query("SELECT COUNT(*) as c FROM postulaciones WHERE estado_general = 'aprobado'");
     const appsReasignacion = await query("SELECT COUNT(*) as c FROM postulaciones WHERE es_reasignacion = true OR estado_general = 'reasignacion' OR estado_general = 'reenganche'");
+    const totalDonacionesBob = await query(
+      "SELECT COALESCE(SUM(monto_bob), 0) as s FROM donaciones WHERE tipo_donacion = 'economica' AND COALESCE(estado_entrega, 'recibida') <> 'ofrecida'"
+    );
+    const totalDonacionesEspecie = await query(
+      "SELECT COUNT(*) as c FROM donaciones WHERE tipo_donacion = 'especie' AND COALESCE(estado_entrega, 'recibida') <> 'ofrecida'"
+    );
+    const totalDonacionesOfrecidas = await query(
+      "SELECT COUNT(*) as c FROM donaciones WHERE estado_entrega = 'ofrecida'"
+    );
     const totalDonacionesBob = await query("SELECT COALESCE(SUM(monto_bob), 0) as s FROM donaciones WHERE tipo_donacion = 'economica'");
     const totalDonacionesEspecie = await query("SELECT COUNT(*) as c FROM donaciones WHERE tipo_donacion = 'especie'");
     const totalEntregadoBob = await query(
@@ -3797,6 +4074,7 @@ router.get('/metrics', async (req: Request, res: Response) => {
       postulacionesReenganche: parseInt(appsReasignacion[0].c, 10),
       totalDonacionesBob: parseFloat(totalDonacionesBob[0].s),
       totalDonacionesEspecie: parseInt(totalDonacionesEspecie[0].c, 10),
+      totalDonacionesOfrecidas: parseInt(totalDonacionesOfrecidas[0].c, 10),
       totalDonacionesEntregadoBob: parseFloat(totalEntregadoBob[0].s),
       totalEntregasRegistradas: parseInt(totalEntregas[0].c, 10),
     });

@@ -7,6 +7,8 @@ import type {
   Receptor,
   DonacionTrazabilidad,
   CreateDonationPayload,
+  OfferDonationPayload,
+  ConfirmDonationReceiptPayload,
   RegisterDeliveryPayload,
   UpdateDeliveryStatusPayload,
   DashboardMetrics,
@@ -54,6 +56,41 @@ export const useDonationsStore = defineStore('donations', () => {
       return res;
     } catch (err: any) {
       error.value = err?.response?.data?.error || 'Error al registrar donación';
+      throw err;
+    } finally {
+      submitting.value = false;
+    }
+  }
+
+  async function offerDonation(payload: OfferDonationPayload) {
+    submitting.value = true;
+    error.value = null;
+    try {
+      const res = await api.offerDonation(payload);
+      if (res.donacion) {
+        donations.value.unshift(res.donacion);
+      }
+      return res;
+    } catch (err: any) {
+      error.value = err?.response?.data?.error || 'Error al registrar la donación ofrecida';
+      throw err;
+    } finally {
+      submitting.value = false;
+    }
+  }
+
+  async function confirmDonationReceipt(
+    donacionId: number | string,
+    payload: ConfirmDonationReceiptPayload
+  ) {
+    submitting.value = true;
+    error.value = null;
+    try {
+      const res = await api.confirmDonationReceipt(donacionId, payload);
+      await Promise.all([fetchDonations(), fetchMetrics()]);
+      return res;
+    } catch (err: any) {
+      error.value = err?.response?.data?.error || 'Error al confirmar recepción de donación';
       throw err;
     } finally {
       submitting.value = false;
@@ -134,6 +171,8 @@ export const useDonationsStore = defineStore('donations', () => {
     fetchDonations,
     fetchCatalogs,
     recordDonation,
+    offerDonation,
+    confirmDonationReceipt,
     fetchTraceability,
     registerDelivery,
     updateDeliveryStatus,
