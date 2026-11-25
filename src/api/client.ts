@@ -29,6 +29,8 @@ import type {
   ValidarEdadResponse,
   ProposeProjectPayload,
   CreateDonationPayload,
+  OfferDonationPayload,
+  ConfirmDonationReceiptPayload,
   RegisterDeliveryPayload,
   UpdateDeliveryStatusPayload,
   DashboardMetrics,
@@ -62,6 +64,11 @@ apiClient.interceptors.request.use(async (config) => {
 });
 
 export const api = {
+  async getStatus(): Promise<{ databaseConfigured: boolean }> {
+    const res = await apiClient.get<{ databaseConfigured: boolean }>('/status');
+    return res.data;
+  },
+
   // Autenticación Administrativa
   async login(payload: { email: string; password: string }): Promise<{ token: string; user: any; message: string }> {
     const res = await apiClient.post('/auth/login', payload);
@@ -435,6 +442,28 @@ export const api = {
 
   async createDonacion(payload: CreateDonationPayload): Promise<Donacion> {
     const res = await apiClient.post<Donacion>('/donaciones', payload);
+    return res.data;
+  },
+
+  // KIR-30 / KIR-47: Registrar donación ofrecida directamente por un donante
+  async offerDonation(
+    payload: OfferDonationPayload
+  ): Promise<{ message: string; donacion: Donacion }> {
+    const res = await apiClient.post<{ message: string; donacion: Donacion }>(
+      '/donaciones/ofrecer',
+      payload
+    );
+    return res.data;
+  },
+
+  async confirmDonationReceipt(
+    donacionId: number | string,
+    payload: ConfirmDonationReceiptPayload
+  ): Promise<{ message: string; donacion: Donacion }> {
+    const res = await apiClient.patch<{ message: string; donacion: Donacion }>(
+      `/donaciones/${donacionId}/confirmar-recepcion`,
+      payload
+    );
     return res.data;
   },
 

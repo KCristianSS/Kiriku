@@ -13,6 +13,7 @@ const navItems = [
   { name: 'Seguimiento', path: '/seguimiento' },
   { name: 'Seguimiento de proyectos', path: '/seguimiento-proyecto' },
   { name: 'Proponer Proyecto', path: '/proponer' },
+  { name: 'Ofrecer Donación', path: '/ofrecer-donacion' },
   { name: 'Donaciones', path: '/donaciones' },
   { name: 'Administración', path: '/admin' },
 ];
