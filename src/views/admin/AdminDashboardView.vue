@@ -270,6 +270,7 @@ onMounted(() => {
         </div>
         <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-violet-600 group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
+
       <router-link
         to="/admin/evaluacion-salud"
         class="bg-white rounded-2xl border border-stone-200 hover:border-[#EB455F] p-5 shadow-xs transition-all flex items-center justify-between group"
@@ -368,6 +369,26 @@ onMounted(() => {
           </div>
         </div>
         <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-stone-800 group-hover:translate-x-1 transition-all shrink-0" />
+      </router-link>
+
+      <router-link
+        to="/donaciones"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#EB455F] p-5 shadow-xs transition-all flex items-center justify-between group"
+      >
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-[#FDECEF] text-[#EB455F] rounded-xl flex items-center justify-center shrink-0">
+            <Heart class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-[#EB455F] transition-colors">
+              Donaciones y Trazabilidad
+            </h3>
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Registrar entregas y vínculo donante → donación → receptor (KIR-32).
+            </p>
+          </div>
+        </div>
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#EB455F] group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
 
 

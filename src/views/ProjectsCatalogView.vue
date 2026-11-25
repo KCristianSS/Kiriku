@@ -15,7 +15,10 @@ import {
   CheckCircle2,
   HeartHandshake,
   Layers,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-vue-next';
+import { api } from '../api/client';
 
 const router = useRouter();
 const projectsStore = useProjectsStore();
@@ -25,9 +28,24 @@ const locationFilter = ref('');
 const modalProject = ref<Proyecto | null>(null);
 const isModalOpen = ref(false);
 
-onMounted(async () => {
+async function loadCatalog() {
+  projectsStore.error = null;
+  try {
+    const status = await api.getStatus();
+    if (!status.databaseConfigured) {
+      projectsStore.error =
+        'Conexión a Supabase pendiente: agrega tu variable DATABASE_URL en los Secretos del proyecto (Settings → Secrets) o en tu archivo .env local y vuelve a intentar.';
+      return;
+    }
+  } catch {
+    // Continuar con la carga normal si /status no responde
+  }
   await projectsStore.fetchPublishedProjects();
   await projectsStore.fetchOrganizations();
+}
+
+onMounted(async () => {
+  await loadCatalog();
 });
 
 // KIR-80: Listado exclusivo de proyectos aprobados y publicados
@@ -163,6 +181,27 @@ function handleConfirmAdult(payload?: { confirmedDate?: string }) {
       <div v-if="projectsStore.loading" class="py-16 text-center">
         <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-stone-200 border-t-[#289EAB] mb-3"></div>
         <p class="text-sm text-stone-500 font-medium">Cargando proyectos desde Supabase...</p>
+      </div>
+
+      <div
+        v-else-if="projectsStore.error"
+        role="alert"
+        class="py-12 text-center bg-white rounded-3xl border border-amber-200 p-8 space-y-3"
+      >
+        <div class="w-12 h-12 bg-amber-50 text-amber-700 rounded-2xl flex items-center justify-center mx-auto">
+          <AlertCircle class="w-6 h-6" />
+        </div>
+        <h3 class="text-base font-bold text-stone-900">Conexión a base de datos pendiente</h3>
+        <p class="text-xs sm:text-sm text-stone-600 max-w-lg mx-auto leading-relaxed">
+          {{ projectsStore.error }}
+        </p>
+        <button
+          @click="loadCatalog"
+          class="px-4 py-2 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+        >
+          <RefreshCw class="w-3.5 h-3.5" />
+          <span>Reintentar conexión</span>
+        </button>
       </div>
 
       <div v-else-if="filteredProjects.length === 0" class="py-16 text-center bg-white rounded-3xl border border-stone-200 p-8">

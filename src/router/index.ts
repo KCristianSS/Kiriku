@@ -5,6 +5,7 @@ import ApplicationStatusView from '../views/ApplicationStatusView.vue';
 import ProjectStatusView from '../views/ProjectStatusView.vue';
 import ProposeProjectView from '../views/ProposeProjectView.vue';
 import DonationsView from '../views/DonationsView.vue';
+import DonateOfferView from '../views/DonateOfferView.vue';
 import AdminDashboardView from '../views/admin/AdminDashboardView.vue';
 import ProjectReviewView from '../views/admin/ProjectReviewView.vue';
 import ApplicantsPoolView from '../views/admin/ApplicantsPoolView.vue';
@@ -54,6 +55,11 @@ const routes: RouteRecordRaw[] = [
     path: '/donaciones',
     name: 'donations',
     component: DonationsView,
+  },
+  {
+    path: '/ofrecer-donacion',
+    name: 'donate-offer',
+    component: DonateOfferView,
   },
   {
     path: '/admin',
