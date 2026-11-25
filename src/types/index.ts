@@ -237,6 +237,10 @@ export interface EvaluacionSaludItem {
   postulacion_fecha: string;
   postulacion_estado: PostulacionEstado;
   postulante: Postulante & { edad: number; es_mayor_edad: boolean };
+  postulante: Postulante & {
+    edad?: number;
+    es_mayor_edad?: boolean;
+  };
   proyecto: {
     id: number | string;
     titulo: string;
@@ -275,6 +279,51 @@ export interface EvaluacionPersonalItem {
   tecnica_estado: EtapaEstado | string;
   puede_evaluar: boolean;
   postulante: Postulante;
+  postulante: Postulante & {
+    edad?: number;
+    es_mayor_edad?: boolean;
+  };
+  proyecto: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+    organizacion_nombre?: string | null;
+  };
+}
+
+export interface RegistrarEvaluacionPersonalPayload {
+  estado: 'aprobado' | 'observado' | 'rechazado';
+  evaluador: string;
+  comentarios: string;
+  criterios: EvaluacionPersonalCriterios;
+}
+
+// KIR-54: Estructura de evaluación de salud física y psicológica (Etapa 5)
+export interface EvaluacionSaludCriterios {
+  apto_fisico?: boolean;
+  apto_psicologico?: boolean;
+  examen_medico_vigente?: boolean;
+  condicion_especifica_atendida?: boolean;
+}
+
+export interface EvaluacionSaludItem {
+  etapa_id: number | string;
+  postulacion_id: number | string;
+  etapa_estado: EtapaEstado;
+  evaluador?: string | null;
+  comentarios?: string | null;
+  fecha_evaluacion?: string | null;
+  postulacion_fecha: string;
+  postulacion_estado: PostulacionEstado;
+  inicial_estado: EtapaEstado | string;
+  tecnica_estado: EtapaEstado | string;
+  personal_estado: EtapaEstado | string;
+  competencias_estado: EtapaEstado | string;
+  puede_evaluar: boolean;
+  postulante: Postulante & {
+    edad: number;
+    es_mayor_edad: boolean;
+  };
   proyecto: {
     id: number | string;
     titulo: string;
@@ -386,17 +435,130 @@ export interface PostulacionTrackingItem {
 
 export type DonacionTipo = 'economica' | 'especie';
 
+export type DonanteTipo = 'persona' | 'empresa' | 'organizacion' | 'anonimo';
+
+export type ReceptorTipo = 'proyecto' | 'organizacion' | 'comunidad' | 'persona';
+
+export type DonacionEstadoEntrega = 'ofrecida' | 'recibida' | 'en_preparacion' | 'entrega_parcial' | 'entregada';
+
+export type DonacionOrigenRegistro = 'oferta_donante' | 'recepcion_interna';
+
+export type DonacionModalidadEntrega =
+  | 'transferencia_qr'
+  | 'entrega_centro_acopio'
+  | 'recojo_domicilio'
+  | 'coordinacion_directa';
+
+export type DonacionCategoriaEspecie =
+  | 'alimentos'
+  | 'ropa_abrigo'
+  | 'utiles_escolares'
+  | 'salud_higiene'
+  | 'herramientas'
+  | 'otros';
+export type DonacionEstadoEntrega = 'recibida' | 'en_preparacion' | 'entrega_parcial' | 'entregada';
+
+export type EntregaEstado = 'programada' | 'en_camino' | 'entregada' | 'verificada';
+
+export interface Donante {
+  id: number | string;
+  nombre: string;
+  tipo_donante: DonanteTipo | string;
+  documento_identidad?: string | null;
+  email?: string | null;
+  telefono?: string | null;
+  ciudad?: string | null;
+  created_at?: string;
+}
+
+export interface Receptor {
+  id: number | string;
+  nombre: string;
+  tipo_receptor: ReceptorTipo | string;
+  documento_identidad?: string | null;
+  email?: string | null;
+  telefono?: string | null;
+  ubicacion?: string | null;
+  proyecto_id?: number | string | null;
+  organizacion_id?: number | string | null;
+  proyecto_titulo?: string | null;
+  organizacion_nombre?: string | null;
+  created_at?: string;
+}
+
+export interface EntregaDonacion {
+  id: number | string;
+  donacion_id: number | string;
+  donante_id?: number | string | null;
+  receptor_id: number | string;
+  proyecto_id?: number | string | null;
+  organizacion_id?: number | string | null;
+  codigo_entrega: string;
+  estado: EntregaEstado;
+  monto_entregado_bob?: number | null;
+  detalle_bienes_entregados?: string | null;
+  responsable_entrega: string;
+  recibido_por_receptor: string;
+  fecha_entrega: string;
+  observaciones?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  receptor?: Receptor | null;
+  proyecto_titulo?: string | null;
+  organizacion_nombre?: string | null;
+}
+
 export interface Donacion {
   id: number | string;
+  codigo_donacion?: string;
+  donante_id?: number | string | null;
   donante_nombre: string;
+  donante_tipo?: DonanteTipo | string;
+  donante_documento?: string | null;
   donante_email?: string | null;
+  donante_telefono?: string | null;
   tipo_donacion: DonacionTipo;
   monto_bob?: number | null;
   descripcion_especie?: string | null;
+  categoria_especie?: DonacionCategoriaEspecie | string | null;
+  cantidad_especie?: number | null;
   proyecto_destino_id?: number | string | null;
-  recibido_por: string;
+  recibido_por?: string | null;
   fecha_recepcion: string;
+  fecha_confirmacion_recepcion?: string | null;
+  estado_entrega?: DonacionEstadoEntrega;
+  origen_registro?: DonacionOrigenRegistro | string;
+  modalidad_entrega?: DonacionModalidadEntrega | string | null;
+  fecha_disponible_estimada?: string | null;
+  direccion_recojo?: string | null;
+  notas_donante?: string | null;
+  estado_entrega?: DonacionEstadoEntrega;
+  updated_at?: string;
   proyecto?: Proyecto | null;
+  donante?: Donante | null;
+  entregas?: EntregaDonacion[];
+  entregas_count?: number;
+  monto_entregado_total?: number;
+  saldo_disponible_bob?: number;
+  ultimo_receptor?: string | null;
+}
+
+export interface DonacionTrazabilidad {
+  donacion: Donacion;
+  donante: Donante;
+  proyecto_destino: Proyecto | null;
+  entregas: EntregaDonacion[];
+  resumen: {
+    codigo_donacion: string;
+    estado_entrega: DonacionEstadoEntrega;
+    total_entregas: number;
+    entregas_completadas: number;
+    entregas_pendientes: number;
+    monto_total_bob: number;
+    monto_entregado_bob: number;
+    saldo_disponible_bob: number;
+    receptores_vinculados: number;
+  };
 }
 
 export interface CreatePostulantePayload {
@@ -462,12 +624,90 @@ export interface ProposeProjectPayload {
 
 export interface CreateDonationPayload {
   donante_nombre: string;
+  donante_tipo?: DonanteTipo;
+  donante_documento?: string;
   donante_email?: string;
+  donante_telefono?: string;
+  donante_ciudad?: string;
   tipo_donacion: DonacionTipo;
   monto_bob?: number;
   descripcion_especie?: string;
-  proyecto_destino_id?: string | null;
+  proyecto_destino_id?: string | number | null;
   recibido_por: string;
+}
+
+export interface RegisterDeliveryPayload {
+  receptor_id?: number | string | null;
+  receptor_nombre?: string;
+  receptor_tipo?: ReceptorTipo;
+  receptor_documento?: string;
+  receptor_email?: string;
+  receptor_telefono?: string;
+  receptor_ubicacion?: string;
+  proyecto_id?: number | string | null;
+  organizacion_id?: number | string | null;
+  estado?: EntregaEstado;
+  monto_entregado_bob?: number | null;
+  detalle_bienes_entregados?: string;
+  responsable_entrega: string;
+  recibido_por_receptor: string;
+  fecha_entrega?: string;
+  observaciones?: string;
+}
+
+export interface UpdateDeliveryStatusPayload {
+  estado: EntregaEstado;
+  recibido_por_receptor?: string;
+  observaciones?: string;
+}
+
+export interface OfferDonationPayload {
+  donante_nombre?: string;
+  donante_tipo?: DonanteTipo;
+  donante_documento?: string;
+  donante_email?: string;
+  donante_telefono?: string;
+  donante_ciudad?: string;
+  tipo_donacion: DonacionTipo;
+  monto_bob?: number;
+  descripcion_especie?: string;
+  categoria_especie?: DonacionCategoriaEspecie | string;
+  cantidad_especie?: number | null;
+  proyecto_destino_id?: string | number | null;
+  modalidad_entrega?: DonacionModalidadEntrega;
+  fecha_disponible_estimada?: string;
+  direccion_recojo?: string;
+  notas_donante?: string;
+}
+
+export interface ConfirmDonationReceiptPayload {
+  recibido_por: string;
+  notas_recepcion?: string;
+}
+
+export interface RegisterDeliveryPayload {
+  receptor_id?: number | string | null;
+  receptor_nombre?: string;
+  receptor_tipo?: ReceptorTipo;
+  receptor_documento?: string;
+  receptor_email?: string;
+  receptor_telefono?: string;
+  receptor_ubicacion?: string;
+  proyecto_id?: number | string | null;
+  organizacion_id?: number | string | null;
+  estado?: EntregaEstado;
+  monto_entregado_bob?: number | null;
+  detalle_bienes_entregados?: string;
+  responsable_entrega: string;
+  recibido_por_receptor: string;
+  fecha_entrega?: string;
+  observaciones?: string;
+}
+
+export interface UpdateDeliveryStatusPayload {
+  estado: EntregaEstado;
+  recibido_por_receptor?: string;
+  observaciones?: string;
 }
 
 // KIR-42: Solicitudes de necesidad de donación y sus receptores.
@@ -550,4 +790,7 @@ export interface DashboardMetrics {
   postulacionesReenganche?: number;
   totalDonacionesBob: number;
   totalDonacionesEspecie: number;
+  totalDonacionesOfrecidas?: number;
+  totalDonacionesEntregadoBob?: number;
+  totalEntregasRegistradas?: number;
 }

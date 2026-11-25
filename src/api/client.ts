@@ -20,6 +20,9 @@ import type {
   EvaluacionSaludItem,
   RegistrarEvaluacionSaludPayload,
   Donacion,
+  Donante,
+  Receptor,
+  DonacionTrazabilidad,
   CreatePostulantePayload,
   PostulacionRegistroResponse,
   ValidarEdadPayload,
@@ -29,6 +32,10 @@ import type {
   DonationNeedRequestPayload,
   DonationNeedRequestResponse,
   DonationHistoryResponse,
+  OfferDonationPayload,
+  ConfirmDonationReceiptPayload,
+  RegisterDeliveryPayload,
+  UpdateDeliveryStatusPayload,
   DashboardMetrics,
 } from '../types';
 
@@ -60,6 +67,11 @@ apiClient.interceptors.request.use(async (config) => {
 });
 
 export const api = {
+  async getStatus(): Promise<{ databaseConfigured: boolean }> {
+    const res = await apiClient.get<{ databaseConfigured: boolean }>('/status');
+    return res.data;
+  },
+
   // Autenticación Administrativa
   async login(payload: { email: string; password: string }): Promise<{ token: string; user: any; message: string }> {
     const res = await apiClient.post('/auth/login', payload);
@@ -421,9 +433,13 @@ export const api = {
     return res.data;
   },
 
-  // Donaciones
-  async getDonaciones(): Promise<Donacion[]> {
-    const res = await apiClient.get<Donacion[]>('/donaciones');
+  // Donaciones y Trazabilidad (KIR-32)
+  async getDonaciones(params?: {
+    q?: string;
+    tipo?: string;
+    estado_entrega?: string;
+  }): Promise<Donacion[]> {
+    const res = await apiClient.get<Donacion[]>('/donaciones', { params });
     return res.data;
   },
 
@@ -447,6 +463,65 @@ export const api = {
     limite?: number;
   }): Promise<DonationHistoryResponse> {
     const res = await apiClient.get<DonationHistoryResponse>('/donaciones/historial', { params });
+  // KIR-30 / KIR-47: Registrar donación ofrecida directamente por un donante
+  async offerDonation(
+    payload: OfferDonationPayload
+  ): Promise<{ message: string; donacion: Donacion }> {
+    const res = await apiClient.post<{ message: string; donacion: Donacion }>(
+      '/donaciones/ofrecer',
+      payload
+    );
+    return res.data;
+  },
+
+  async confirmDonationReceipt(
+    donacionId: number | string,
+    payload: ConfirmDonationReceiptPayload
+  ): Promise<{ message: string; donacion: Donacion }> {
+    const res = await apiClient.patch<{ message: string; donacion: Donacion }>(
+      `/donaciones/${donacionId}/confirmar-recepcion`,
+      payload
+    );
+    return res.data;
+  },
+
+  async getDonantes(): Promise<Donante[]> {
+    const res = await apiClient.get<Donante[]>('/donaciones/donantes');
+    return res.data;
+  },
+
+  async getReceptores(): Promise<Receptor[]> {
+    const res = await apiClient.get<Receptor[]>('/donaciones/receptores');
+    return res.data;
+  },
+
+  async getDonationTraceability(id: number | string): Promise<DonacionTrazabilidad> {
+    const res = await apiClient.get<DonacionTrazabilidad>(`/donaciones/${id}/trazabilidad`);
+    return res.data;
+  },
+
+  async registerDonationDelivery(
+    donacionId: number | string,
+    payload: RegisterDeliveryPayload
+  ): Promise<{
+    message: string;
+    entrega: any;
+    donacion_estado_entrega: string;
+    saldo_disponible_bob: number;
+  }> {
+    const res = await apiClient.post(`/donaciones/${donacionId}/entregas`, payload);
+    return res.data;
+  },
+
+  async updateDeliveryStatus(
+    entregaId: number | string,
+    payload: UpdateDeliveryStatusPayload
+  ): Promise<{
+    message: string;
+    entrega: any;
+    donacion_estado_entrega: string;
+  }> {
+    const res = await apiClient.patch(`/donaciones/entregas/${entregaId}`, payload);
     return res.data;
   },
 
