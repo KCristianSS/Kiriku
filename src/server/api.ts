@@ -3021,6 +3021,25 @@ router.get('/donaciones/donantes', async (_req: Request, res: Response) => {
 router.get('/donaciones/receptores', async (_req: Request, res: Response) => {
   try {
     const rows = await query(`
+  try {
+    const rows = await query(`
+      SELECT dn.*, COUNT(d.id)::int AS total_donaciones
+      FROM donantes dn
+      LEFT JOIN donaciones d ON d.donante_id = dn.id
+      GROUP BY dn.id
+      ORDER BY dn.created_at DESC, dn.id DESC
+      LIMIT 100
+    `);
+    res.json(rows);
+  } catch (err: any) {
+    console.error('Error fetching donantes:', err);
+    res.status(500).json({ error: 'Error al consultar donantes registrados' });
+  }
+});
+
+router.get('/donaciones/receptores', async (_req: Request, res: Response) => {
+  try {
+    const rows = await query(`
       SELECT r.*,
              p.titulo AS proyecto_titulo,
              o.nombre AS organizacion_nombre
@@ -3057,6 +3076,7 @@ router.get('/donaciones', async (req: Request, res: Response) => {
     if (
       estadoEntregaFilter &&
       ['ofrecida', 'recibida', 'en_preparacion', 'entrega_parcial', 'entregada'].includes(estadoEntregaFilter)
+      ['recibida', 'en_preparacion', 'entrega_parcial', 'entregada'].includes(estadoEntregaFilter)
     ) {
       params.push(estadoEntregaFilter);
       conditions.push(`COALESCE(d.estado_entrega, 'recibida') = $${params.length}`);
@@ -3152,6 +3172,7 @@ router.get('/donaciones', async (req: Request, res: Response) => {
         entregas,
         r.estado_entrega
       );
+      const derivedStatus = deriveDonationDeliveryStatus(r.tipo_donacion, r.monto_bob, entregas);
 
       return {
         ...r,
@@ -3263,6 +3284,7 @@ router.get('/donaciones/:id/trazabilidad', async (req: Request, res: Response) =
     const estadoEntrega =
       d.estado_entrega ||
       deriveDonationDeliveryStatus(d.tipo_donacion, d.monto_bob, entregas, d.estado_entrega);
+    const estadoEntrega = d.estado_entrega || deriveDonationDeliveryStatus(d.tipo_donacion, d.monto_bob, entregas);
     const receptoresUnicos = new Set(entregas.map((e) => e.receptor_id));
 
     const donante = {
@@ -4033,6 +4055,8 @@ router.get('/metrics', async (req: Request, res: Response) => {
     const totalDonacionesOfrecidas = await query(
       "SELECT COUNT(*) as c FROM donaciones WHERE estado_entrega = 'ofrecida'"
     );
+    const totalDonacionesBob = await query("SELECT COALESCE(SUM(monto_bob), 0) as s FROM donaciones WHERE tipo_donacion = 'economica'");
+    const totalDonacionesEspecie = await query("SELECT COUNT(*) as c FROM donaciones WHERE tipo_donacion = 'especie'");
     const totalEntregadoBob = await query(
       "SELECT COALESCE(SUM(monto_entregado_bob), 0) as s FROM entregas_donaciones WHERE estado IN ('entregada', 'verificada')"
     );
