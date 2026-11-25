@@ -28,7 +28,9 @@ export async function authenticate(req: AuthenticatedRequest, res: Response, nex
   }
 
   try {
-    const { data, error } = await supabase.auth.getUser(token);
+    const { data, error } = supabase
+      ? await supabase.auth.getUser(token)
+      : { data: { user: null }, error: new Error('Supabase Auth no configurado') };
     if (error || !data.user) {
       // Si la API remota de Supabase rechaza o la clave no tiene conexión externa,
       // verificar si es un token/id de usuario local existente en auth.users

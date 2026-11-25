@@ -462,14 +462,19 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
     '/donaciones': {
       get: {
         tags: ['Donaciones'],
-        summary: 'Listar donaciones recibidas',
+        summary: 'Listar donaciones con entregas y vínculo donante-receptor (KIR-32)',
+        parameters: [
+          { name: 'q', in: 'query', schema: { type: 'string' }, description: 'Buscar por donante, código KIR-DON, receptor o proyecto' },
+          { name: 'tipo', in: 'query', schema: { type: 'string', enum: ['economica', 'especie'] } },
+          { name: 'estado_entrega', in: 'query', schema: { type: 'string', enum: ['recibida', 'en_preparacion', 'entrega_parcial', 'entregada'] } },
+        ],
         responses: {
-          200: { description: 'Historial de donaciones económicas y en especie.' },
+          200: { description: 'Historial de donaciones económicas y en especie con resumen de entregas y saldo disponible.' },
         },
       },
       post: {
         tags: ['Donaciones'],
-        summary: 'Registrar nueva donación comunitaria',
+        summary: 'Registrar nueva donación vinculada a donante',
         requestBody: {
           required: true,
           content: {
@@ -479,7 +484,10 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
                 required: ['donante_nombre', 'tipo_donacion', 'recibido_por'],
                 properties: {
                   donante_nombre: { type: 'string', example: 'Banco Mercantil Santa Cruz' },
+                  donante_tipo: { type: 'string', enum: ['persona', 'empresa', 'organizacion', 'anonimo'], example: 'empresa' },
+                  donante_documento: { type: 'string', example: '1020304021' },
                   donante_email: { type: 'string', example: 'rse@bmsc.com.bo' },
+                  donante_telefono: { type: 'string', example: '+591 71234567' },
                   tipo_donacion: { type: 'string', enum: ['economica', 'especie'], example: 'economica' },
                   monto_bob: { type: 'number', example: 12500.00 },
                   descripcion_especie: { type: 'string', example: '50 cajas de útiles escolares' },
@@ -491,7 +499,165 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
           },
         },
         responses: {
-          201: { description: 'Donación registrada con éxito.' },
+          201: { description: 'Donación y donante registrados con código de trazabilidad KIR-DON.' },
+        },
+      },
+    },
+    '/donaciones/ofrecer': {
+      post: {
+        tags: ['Donaciones'],
+        summary: 'Registrar donación ofrecida directamente por un donante (KIR-30 / KIR-47)',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['tipo_donacion'],
+                properties: {
+                  donante_nombre: { type: 'string', example: 'Valeria Mendoza' },
+                  donante_tipo: { type: 'string', enum: ['persona', 'empresa', 'organizacion', 'anonimo'], example: 'persona' },
+                  donante_email: { type: 'string', example: 'valeria@correo.com' },
+                  donante_telefono: { type: 'string', example: '+591 71234567' },
+                  donante_ciudad: { type: 'string', example: 'La Paz' },
+                  tipo_donacion: { type: 'string', enum: ['economica', 'especie'], example: 'especie' },
+                  monto_bob: { type: 'number', example: 350 },
+                  descripcion_especie: { type: 'string', example: '20 frazadas térmicas nuevas' },
+                  categoria_especie: { type: 'string', enum: ['alimentos', 'ropa_abrigo', 'utiles_escolares', 'salud_higiene', 'herramientas', 'otros'] },
+                  cantidad_especie: { type: 'integer', example: 20 },
+                  proyecto_destino_id: { type: 'integer', example: 1 },
+                  modalidad_entrega: { type: 'string', enum: ['transferencia_qr', 'entrega_centro_acopio', 'recojo_domicilio', 'coordinacion_directa'] },
+                  fecha_disponible_estimada: { type: 'string', format: 'date', example: '2026-12-01' },
+                  direccion_recojo: { type: 'string', example: 'Av. Arce #2140, Sopocachi' },
+                  notas_donante: { type: 'string', example: 'Disponible por la tarde' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: 'Donación ofrecida registrada en estado ofrecida con código KIR-DON.' },
+          400: { description: 'Datos inválidos o faltantes en el ofrecimiento.' },
+        },
+      },
+    },
+    '/donaciones/{id}/confirmar-recepcion': {
+      patch: {
+        tags: ['Donaciones'],
+        summary: 'Confirmar recepción en custodia de una donación ofrecida (ofrecida → recibida)',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['recibido_por'],
+                properties: {
+                  recibido_por: { type: 'string', example: 'Kevin Sancalli' },
+                  notas_recepcion: { type: 'string', example: 'Verificado comprobante de transferencia' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'Recepción confirmada, donación lista para trazabilidad y entregas.' },
+          400: { description: 'Estado previo inválido o falta recibido_por.' },
+        },
+      },
+    },
+    '/donaciones/donantes': {
+      get: {
+        tags: ['Donaciones'],
+        summary: 'Listar donantes registrados (KIR-38)',
+        responses: { 200: { description: 'Catálogo de donantes y conteo de aportes.' } },
+      },
+    },
+    '/donaciones/receptores': {
+      get: {
+        tags: ['Donaciones'],
+        summary: 'Listar receptores registrados (KIR-38)',
+        responses: { 200: { description: 'Catálogo de receptores beneficiarios vinculados a proyectos u organizaciones.' } },
+      },
+    },
+    '/donaciones/{id}/trazabilidad': {
+      get: {
+        tags: ['Donaciones'],
+        summary: 'Consultar cadena completa de trazabilidad Donante → Donación → Receptor (KIR-32)',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'ID numérico o código KIR-DON-X' },
+        ],
+        responses: {
+          200: { description: 'Cadena completa de trazabilidad y resumen de saldos entregados.' },
+          404: { description: 'Donación no encontrada.' },
+        },
+      },
+    },
+    '/donaciones/{id}/entregas': {
+      post: {
+        tags: ['Donaciones'],
+        summary: 'Registrar entrega y vincular donación/donante con receptor (KIR-39)',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['responsable_entrega', 'recibido_por_receptor'],
+                properties: {
+                  receptor_id: { type: 'integer' },
+                  receptor_nombre: { type: 'string', example: 'Comunidad Villa Adela Norte' },
+                  receptor_tipo: { type: 'string', enum: ['proyecto', 'organizacion', 'comunidad', 'persona'], example: 'comunidad' },
+                  receptor_ubicacion: { type: 'string', example: 'El Alto, La Paz' },
+                  estado: { type: 'string', enum: ['programada', 'en_camino', 'entregada', 'verificada'], example: 'entregada' },
+                  monto_entregado_bob: { type: 'number', example: 5000 },
+                  detalle_bienes_entregados: { type: 'string', example: '25 kits escolares completos' },
+                  responsable_entrega: { type: 'string', example: 'Coordinación Logística Kirikú' },
+                  recibido_por_receptor: { type: 'string', example: 'María Mamani (Representante)' },
+                  observaciones: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: 'Entrega registrada con comprobante KIR-ENT y estado actualizado.' },
+          400: { description: 'Validación fallida o monto superior al saldo disponible.' },
+        },
+      },
+    },
+    '/donaciones/entregas/{entregaId}': {
+      patch: {
+        tags: ['Donaciones'],
+        summary: 'Actualizar estado de una entrega (programada → en_camino → entregada → verificada)',
+        parameters: [
+          { name: 'entregaId', in: 'path', required: true, schema: { type: 'integer' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['estado'],
+                properties: {
+                  estado: { type: 'string', enum: ['programada', 'en_camino', 'entregada', 'verificada'] },
+                  recibido_por_receptor: { type: 'string' },
+                  observaciones: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'Estado de entrega actualizado y sincronizado con la donación.' },
+          400: { description: 'Transición de estado inválida.' },
         },
       },
     },
