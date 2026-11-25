@@ -62,6 +62,14 @@ const routes: RouteRecordRaw[] = [
     component: DonateOfferView,
   },
   {
+    path: '/necesidades-donacion',
+    redirect: { path: '/donaciones', query: { tab: 'necesidades' } },
+  },
+  {
+    path: '/historial-donaciones',
+    redirect: { path: '/donaciones', query: { tab: 'historial' } },
+  },
+  {
     path: '/admin',
     name: 'admin-dashboard',
     component: AdminDashboardView,

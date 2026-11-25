@@ -203,40 +203,6 @@ export interface EvaluacionCompetenciasItem {
   tecnica_estado: EtapaEstado | string;
   personal_estado: EtapaEstado | string;
   puede_evaluar: boolean;
-  postulante: Postulante;
-  proyecto: {
-    id: number | string;
-    titulo: string;
-    ubicacion: string;
-    organizacion_nombre?: string | null;
-  };
-}
-
-// KIR-54: Estructura de evaluación de salud física y psicológica (Etapa 5)
-export interface EvaluacionSaludCriterios {
-  apto_fisico?: boolean;
-  apto_psicologico?: boolean;
-  examen_medico_vigente?: boolean;
-  condicion_especifica_atendida?: boolean;
-}
-
-export interface EvaluacionSaludItem {
-  etapa_id: number | string;
-  postulacion_id: number | string;
-  etapa_estado: EtapaEstado;
-  evaluador?: string | null;
-  comentarios?: string | null;
-  fecha_evaluacion?: string | null;
-  detalle_criterios: EvaluacionSaludCriterios;
-  puntaje_promedio: number | null;
-  inicial_estado: EtapaEstado | string;
-  tecnica_estado: EtapaEstado | string;
-  personal_estado: EtapaEstado | string;
-  competencias_estado: EtapaEstado | string;
-  puede_evaluar: boolean;
-  postulacion_fecha: string;
-  postulacion_estado: PostulacionEstado;
-  postulante: Postulante & { edad: number; es_mayor_edad: boolean };
   postulante: Postulante & {
     edad?: number;
     es_mayor_edad?: boolean;
@@ -245,8 +211,6 @@ export interface EvaluacionSaludItem {
     id: number | string;
     titulo: string;
     ubicacion: string;
-    cupos_disponibles?: number;
-    organizacion_id?: number | string | null;
     organizacion_nombre?: string | null;
   };
 }
@@ -278,7 +242,6 @@ export interface EvaluacionPersonalItem {
   puntaje_promedio: number | null;
   tecnica_estado: EtapaEstado | string;
   puede_evaluar: boolean;
-  postulante: Postulante;
   postulante: Postulante & {
     edad?: number;
     es_mayor_edad?: boolean;
@@ -328,15 +291,10 @@ export interface EvaluacionSaludItem {
     id: number | string;
     titulo: string;
     ubicacion: string;
+    cupos_disponibles?: number;
+    organizacion_id?: number | string | null;
     organizacion_nombre?: string | null;
   };
-}
-
-export interface RegistrarEvaluacionPersonalPayload {
-  estado: 'aprobado' | 'observado' | 'rechazado';
-  evaluador: string;
-  comentarios: string;
-  criterios: EvaluacionPersonalCriterios;
 }
 
 export interface RegistrarEvaluacionSaludPayload {
@@ -456,7 +414,6 @@ export type DonacionCategoriaEspecie =
   | 'salud_higiene'
   | 'herramientas'
   | 'otros';
-export type DonacionEstadoEntrega = 'recibida' | 'en_preparacion' | 'entrega_parcial' | 'entregada';
 
 export type EntregaEstado = 'programada' | 'en_camino' | 'entregada' | 'verificada';
 
@@ -532,7 +489,6 @@ export interface Donacion {
   fecha_disponible_estimada?: string | null;
   direccion_recojo?: string | null;
   notas_donante?: string | null;
-  estado_entrega?: DonacionEstadoEntrega;
   updated_at?: string;
   proyecto?: Proyecto | null;
   donante?: Donante | null;
@@ -685,32 +641,7 @@ export interface ConfirmDonationReceiptPayload {
   notas_recepcion?: string;
 }
 
-export interface RegisterDeliveryPayload {
-  receptor_id?: number | string | null;
-  receptor_nombre?: string;
-  receptor_tipo?: ReceptorTipo;
-  receptor_documento?: string;
-  receptor_email?: string;
-  receptor_telefono?: string;
-  receptor_ubicacion?: string;
-  proyecto_id?: number | string | null;
-  organizacion_id?: number | string | null;
-  estado?: EntregaEstado;
-  monto_entregado_bob?: number | null;
-  detalle_bienes_entregados?: string;
-  responsable_entrega: string;
-  recibido_por_receptor: string;
-  fecha_entrega?: string;
-  observaciones?: string;
-}
-
-export interface UpdateDeliveryStatusPayload {
-  estado: EntregaEstado;
-  recibido_por_receptor?: string;
-  observaciones?: string;
-}
-
-// KIR-42: Solicitudes de necesidad de donación y sus receptores.
+// KIR-31 (KIR-42): Solicitudes de necesidad de donación y sus receptores
 export type DonationNeedStatus = 'pendiente' | 'en_revision' | 'atendida' | 'rechazada' | 'cancelada';
 
 export interface DonationNeedRequestPayload {
@@ -747,16 +678,24 @@ export interface DonationNeedRequestResponse {
     telefono: string;
     organizacion?: string | null;
   };
+  proyecto?: {
+    id: number | string;
+    titulo: string;
+    ubicacion: string;
+  } | null;
 }
 
+// KIR-33: Historial público/transparente de donaciones
 export interface DonationHistoryItem {
   id: number | string;
+  codigo_donacion?: string;
+  estado_entrega?: DonacionEstadoEntrega | string;
   donante_nombre: string;
   tipo_donacion: DonacionTipo;
   monto_bob: number | null;
   descripcion_especie: string | null;
   fecha_recepcion: string;
-  recibido_por: string;
+  recibido_por: string | null;
   proyecto: {
     id: number | string;
     titulo: string;
