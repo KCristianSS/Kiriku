@@ -6,6 +6,10 @@ import type {
   DonanteTipo,
   EntregaEstado,
   OfferDonationPayload,
+  DonacionEstadoEntrega,
+  DonacionTipo,
+  DonanteTipo,
+  EntregaEstado,
   ReceptorTipo,
   RegisterDeliveryPayload,
 } from '../types';
@@ -156,6 +160,10 @@ export function deriveDonationDeliveryStatus(
 ): DonacionEstadoEntrega {
   if (!entregas.length) {
     return currentStatus === 'ofrecida' ? 'ofrecida' : 'recibida';
+  entregas: DeliveryAmountSnapshot[]
+): DonacionEstadoEntrega {
+  if (!entregas.length) {
+    return 'recibida';
   }
 
   const balance = calculateDonationBalance(tipoDonacion, montoTotalBob, entregas);
