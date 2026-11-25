@@ -28,6 +28,7 @@ export function validateDonationNeedRequest(value: unknown): { valid: true } | {
     ['titulo', 'Ingrese un título para la necesidad'],
     ['descripcion', 'Describa la necesidad de donación'],
   ] as const;
+
   for (const [field, error] of requiredFields) {
     if (typeof request[field] !== 'string' || !request[field].trim()) {
       return { valid: false, error };
@@ -38,6 +39,7 @@ export function validateDonationNeedRequest(value: unknown): { valid: true } | {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { valid: false, error: 'Ingrese un correo electrónico válido' };
   }
+
   if (request.tipo_necesidad !== 'economica' && request.tipo_necesidad !== 'especie') {
     return { valid: false, error: 'Seleccione si la necesidad es económica o en especie' };
   }

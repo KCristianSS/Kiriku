@@ -448,11 +448,20 @@ export const api = {
     return res.data;
   },
 
-  async createDonationNeedRequest(payload: DonationNeedRequestPayload): Promise<DonationNeedRequestResponse> {
+  // KIR-31 (KIR-43): Registrar necesidad y receptor de donación
+  async createDonationNeedRequest(
+    payload: DonationNeedRequestPayload
+  ): Promise<DonationNeedRequestResponse> {
     const res = await apiClient.post<DonationNeedRequestResponse>('/necesidades-donacion', payload);
     return res.data;
   },
 
+  async getDonationNeeds(): Promise<DonationNeedRequestResponse[]> {
+    const res = await apiClient.get<DonationNeedRequestResponse[]>('/necesidades-donacion');
+    return res.data;
+  },
+
+  // KIR-33 (KIR-35): Consultar historial de donaciones con filtros y paginación
   async getDonationHistory(params?: {
     q?: string;
     tipo?: 'economica' | 'especie';
@@ -463,6 +472,9 @@ export const api = {
     limite?: number;
   }): Promise<DonationHistoryResponse> {
     const res = await apiClient.get<DonationHistoryResponse>('/donaciones/historial', { params });
+    return res.data;
+  },
+
   // KIR-30 / KIR-47: Registrar donación ofrecida directamente por un donante
   async offerDonation(
     payload: OfferDonationPayload

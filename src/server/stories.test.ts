@@ -17,8 +17,16 @@ import {
   normalizeInKindCategory,
   validateDeliveryRegistration,
   validateOfferedDonation,
-  validateDeliveryRegistration,
 } from './donation-traceability';
+import {
+  normalizeRecipientEmail,
+  validateDonationNeedRequest,
+} from './donation-needs';
+import {
+  buildDonationHistoryConditions,
+  parseDonationHistoryFilters,
+  toDonationHistoryItem,
+} from './donation-history';
 import { query, dbPool } from './supabase';
 
 describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
@@ -2302,13 +2310,183 @@ describe('VERIFICACIÓN DE LAS 4 HISTORIAS DE USUARIO - KIRIKÚ', () => {
       }
     });
   });
+
+  // ============================================================================
+  // KIR-31: Registrar necesidad y receptor de donación (KIR-42..KIR-45)
+  // ============================================================================
+  describe('KIR-31: Registrar necesidad y receptor de donación', () => {
+    it('KIR-42 & KIR-45: Reglas de validación de necesidad y normalización de correo receptor', () => {
+      assert.equal(normalizeRecipientEmail('  Receptor@ONG.org '), 'receptor@ong.org');
+      assert.equal(
+        validateDonationNeedRequest({
+          receptor_nombre: 'Comunidad San Pedro',
+          receptor_email: 'contacto@sanpedro.org',
+          receptor_telefono: '+591 70001122',
+          tipo_necesidad: 'especie',
+          titulo: 'Material escolar',
+          descripcion: 'Cuadernos y mochilas para niños del barrio.',
+          cantidad_objetivo: 30,
+          unidad_medida: 'kits',
+        }).valid,
+        true
+      );
+      assert.equal(
+        validateDonationNeedRequest({
+          receptor_nombre: 'Comunidad San Pedro',
+          receptor_email: 'invalido',
+          receptor_telefono: '+591 70001122',
+          tipo_necesidad: 'economica',
+          titulo: 'Insumos médicos',
+          descripcion: 'Botiquines de primeros auxilios.',
+          monto_objetivo: 0,
+        }).valid,
+        false
+      );
+    });
+
+    it('KIR-43 & KIR-45: Flujo HTTP + BD de registro de necesidad y receptor en receptores_donacion/necesidades_donacion', async () => {
+      const cols = await query<{ table_name: string }>(
+        `SELECT table_name FROM information_schema.tables
+         WHERE table_schema = 'public'
+           AND table_name IN ('receptores_donacion', 'necesidades_donacion')`
+      );
+      const tableNames = cols.map((c) => c.table_name);
+      assert.ok(tableNames.includes('receptores_donacion'), 'Debe existir receptores_donacion');
+      assert.ok(tableNames.includes('necesidades_donacion'), 'Debe existir necesidades_donacion');
+
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      const recipientEmail = `necesidad.${stamp}@kiriku.test`;
+      let createdNeedId: number | null = null;
+      let createdRecipientId: number | null = null;
+
+      try {
+        const res = await fetch(`${baseUrl}/necesidades-donacion`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receptor_nombre: `Dirigente Prueba ${stamp}`,
+            receptor_email: recipientEmail,
+            receptor_telefono: '+591 71119988',
+            receptor_organizacion: 'Junta Vecinal Piloto',
+            tipo_necesidad: 'especie',
+            titulo: `Frazadas de invierno ${stamp}`,
+            descripcion: 'Se requieren 25 frazadas térmicas para adultos mayores.',
+            cantidad_objetivo: 25,
+            unidad_medida: 'frazadas',
+          }),
+        });
+        assert.equal(res.status, 201);
+        const json = (await res.json()) as any;
+        createdNeedId = json.id;
+        createdRecipientId = json.receptor_id;
+        assert.equal(json.estado, 'pendiente');
+        assert.equal(json.receptor.email, recipientEmail);
+
+        const listRes = await fetch(`${baseUrl}/necesidades-donacion`);
+        assert.equal(listRes.status, 200);
+        const listJson = (await listRes.json()) as any[];
+        assert.ok(listJson.some((item) => item.id === createdNeedId));
+      } finally {
+        server.close();
+        if (createdNeedId) {
+          await query('DELETE FROM necesidades_donacion WHERE id = $1', [createdNeedId]);
+        }
+        if (createdRecipientId) {
+          await query('DELETE FROM receptores_donacion WHERE id = $1', [createdRecipientId]);
+        }
+      }
+    });
+  });
+
+  // ============================================================================
+  // KIR-33: Consultar historial de donaciones (KIR-34..KIR-37)
+  // ============================================================================
+  describe('KIR-33: Consultar historial de donaciones', () => {
+    it('KIR-34 & KIR-37: Filtros, condiciones SQL parametrizadas y privacidad sin correo de donante', () => {
+      const parsed = parseDonationHistoryFilters({ q: 'Frazadas', tipo: 'especie', pagina: 1, limite: 10 });
+      assert.equal(parsed.valid, true);
+      if (parsed.valid) {
+        const { whereSql, params } = buildDonationHistoryConditions(parsed.filters);
+        assert.equal(params.length, 2);
+        assert.match(whereSql, /d\.tipo_donacion = \$1/);
+      }
+
+      const item = toDonationHistoryItem({
+        id: 42,
+        codigo_donacion: 'KIR-DON-42',
+        estado_entrega: 'ofrecida',
+        donante_nombre: 'Carlos Vega',
+        tipo_donacion: 'especie',
+        monto_bob: null,
+        descripcion_especie: '10 cajas de alimentos',
+        proyecto_destino_id: null,
+        recibido_por: null,
+        fecha_recepcion: '2026-11-24T12:00:00.000Z',
+      });
+      assert.equal(item.recibido_por, null);
+      assert.equal('donante_email' in item, false);
+    });
+
+    it('KIR-35 & KIR-37: Consulta HTTP + BD paginada del historial de donaciones sin exponer correos', async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const { port } = server.address() as AddressInfo;
+      const baseUrl = `http://127.0.0.1:${port}/api`;
+
+      const stamp = Date.now();
+      let createdDonationId: number | null = null;
+      let createdDonorId: number | null = null;
+
+      try {
+        const offerRes = await fetch(`${baseUrl}/donaciones/ofrecer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            donante_nombre: `Donante Historial ${stamp}`,
+            donante_tipo: 'persona',
+            donante_email: `privado.${stamp}@kiriku.test`,
+            tipo_donacion: 'economica',
+            monto_bob: 420,
+          }),
+        });
+        assert.equal(offerRes.status, 201);
+        const offerJson = (await offerRes.json()) as any;
+        createdDonationId = offerJson.donacion.id;
+        createdDonorId = offerJson.donacion.donante_id;
+
+        const histRes = await fetch(`${baseUrl}/donaciones/historial?q=${encodeURIComponent(`Donante Historial ${stamp}`)}`);
+        assert.equal(histRes.status, 200);
+        const histJson = (await histRes.json()) as any;
+        assert.equal(histJson.resumen.total_aportes, 1);
+        assert.equal(histJson.resumen.monto_economico_bob, 420);
+        assert.equal(histJson.items[0].id, createdDonationId);
+        assert.equal('donante_email' in histJson.items[0], false);
+      } finally {
+        server.close();
+        if (createdDonationId) {
+          await query('DELETE FROM donaciones WHERE id = $1', [createdDonationId]);
+        }
+        if (createdDonorId) {
+          await query('DELETE FROM donantes WHERE id = $1', [createdDonorId]);
+        }
+      }
+    });
+  });
 });
 
-
-
-
-
-});
 
 
 

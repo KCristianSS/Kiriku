@@ -12,21 +12,27 @@ const baseRequest = {
 };
 
 test('acepta una solicitud de donación en especie válida', () => {
-  assert.deepEqual(validateDonationNeedRequest({
-    ...baseRequest,
-    cantidad_objetivo: 25,
-    unidad_medida: 'kits',
-    fecha_necesaria: '2026-12-15',
-    proyecto_destino_id: '2',
-  }), { valid: true });
+  assert.deepEqual(
+    validateDonationNeedRequest({
+      ...baseRequest,
+      cantidad_objetivo: 25,
+      unidad_medida: 'kits',
+      fecha_necesaria: '2026-12-15',
+      proyecto_destino_id: '2',
+    }),
+    { valid: true }
+  );
 });
 
 test('acepta una solicitud económica con un monto positivo', () => {
-  assert.deepEqual(validateDonationNeedRequest({
-    ...baseRequest,
-    tipo_necesidad: 'economica',
-    monto_objetivo: '1250.50',
-  }), { valid: true });
+  assert.deepEqual(
+    validateDonationNeedRequest({
+      ...baseRequest,
+      tipo_necesidad: 'economica',
+      monto_objetivo: '1250.50',
+    }),
+    { valid: true }
+  );
 });
 
 test('rechaza datos requeridos incompletos, correos inválidos y tipos desconocidos', () => {
@@ -36,7 +42,10 @@ test('rechaza datos requeridos incompletos, correos inválidos y tipos desconoci
 });
 
 test('rechaza montos o cantidades no positivos y fechas inválidas', () => {
-  assert.equal(validateDonationNeedRequest({ ...baseRequest, tipo_necesidad: 'economica', monto_objetivo: 0 }).valid, false);
+  assert.equal(
+    validateDonationNeedRequest({ ...baseRequest, tipo_necesidad: 'economica', monto_objetivo: 0 }).valid,
+    false
+  );
   assert.equal(validateDonationNeedRequest({ ...baseRequest, cantidad_objetivo: -2 }).valid, false);
   assert.equal(validateDonationNeedRequest({ ...baseRequest, fecha_necesaria: '2026-02-31' }).valid, false);
   assert.equal(validateDonationNeedRequest({ ...baseRequest, proyecto_destino_id: '-1' }).valid, false);

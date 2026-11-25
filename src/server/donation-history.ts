@@ -10,6 +10,8 @@ export interface DonationHistoryFilters {
 
 export interface DonationHistoryRow {
   id: number | string;
+  codigo_donacion?: string | null;
+  estado_entrega?: string | null;
   donante_nombre: string;
   tipo_donacion: 'economica' | 'especie';
   monto_bob?: number | string | null;
@@ -17,7 +19,7 @@ export interface DonationHistoryRow {
   proyecto_destino_id?: number | string | null;
   proyecto_titulo?: string | null;
   proyecto_ubicacion?: string | null;
-  recibido_por: string;
+  recibido_por: string | null;
   fecha_recepcion: string;
 }
 
@@ -51,8 +53,10 @@ export function parseDonationHistoryFilters(value: Record<string, unknown>):
 
   const rawFrom = typeof value.fecha_desde === 'string' && value.fecha_desde.trim() ? value.fecha_desde.trim() : undefined;
   const rawTo = typeof value.fecha_hasta === 'string' && value.fecha_hasta.trim() ? value.fecha_hasta.trim() : undefined;
-  if ((value.fecha_desde != null && value.fecha_desde !== '' && typeof value.fecha_desde !== 'string') ||
-      (value.fecha_hasta != null && value.fecha_hasta !== '' && typeof value.fecha_hasta !== 'string')) {
+  if (
+    (value.fecha_desde != null && value.fecha_desde !== '' && typeof value.fecha_desde !== 'string') ||
+    (value.fecha_hasta != null && value.fecha_hasta !== '' && typeof value.fecha_hasta !== 'string')
+  ) {
     return { valid: false, error: 'Las fechas deben tener el formato AAAA-MM-DD' };
   }
   if ((rawFrom && !isValidCalendarDate(rawFrom)) || (rawTo && !isValidCalendarDate(rawTo))) {
@@ -62,8 +66,10 @@ export function parseDonationHistoryFilters(value: Record<string, unknown>):
     return { valid: false, error: 'La fecha inicial no puede ser posterior a la fecha final' };
   }
 
-  if ((value.pagina != null && value.pagina !== '' && typeof value.pagina !== 'string' && typeof value.pagina !== 'number') ||
-      (value.limite != null && value.limite !== '' && typeof value.limite !== 'string' && typeof value.limite !== 'number')) {
+  if (
+    (value.pagina != null && value.pagina !== '' && typeof value.pagina !== 'string' && typeof value.pagina !== 'number') ||
+    (value.limite != null && value.limite !== '' && typeof value.limite !== 'string' && typeof value.limite !== 'number')
+  ) {
     return { valid: false, error: 'La paginación no es válida' };
   }
   const page = value.pagina == null || value.pagina === '' ? 1 : Number(value.pagina);
@@ -87,7 +93,7 @@ export function parseDonationHistoryFilters(value: Record<string, unknown>):
     valid: true,
     filters: {
       q: q || undefined,
-      tipo: rawType ? rawType as DonationHistoryFilters['tipo'] : undefined,
+      tipo: rawType ? (rawType as DonationHistoryFilters['tipo']) : undefined,
       proyecto_destino_id: projectId,
       fecha_desde: rawFrom,
       fecha_hasta: rawTo,
@@ -100,6 +106,7 @@ export function parseDonationHistoryFilters(value: Record<string, unknown>):
 export function buildDonationHistoryConditions(filters: DonationHistoryFilters) {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
+
   const add = (clause: (placeholder: string) => string, value: string | number) => {
     params.push(value);
     clauses.push(clause(`$${params.length}`));
@@ -109,10 +116,13 @@ export function buildDonationHistoryConditions(filters: DonationHistoryFilters) 
   if (filters.proyecto_destino_id) add((placeholder) => `d.proyecto_destino_id = ${placeholder}`, filters.proyecto_destino_id);
   if (filters.fecha_desde) add((placeholder) => `d.fecha_recepcion >= ${placeholder}::date`, filters.fecha_desde);
   if (filters.fecha_hasta) add((placeholder) => `d.fecha_recepcion < (${placeholder}::date + INTERVAL '1 day')`, filters.fecha_hasta);
+
   if (filters.q) {
     params.push(`%${filters.q}%`);
     const placeholder = `$${params.length}`;
-    clauses.push(`(d.donante_nombre ILIKE ${placeholder} OR d.recibido_por ILIKE ${placeholder} OR p.titulo ILIKE ${placeholder})`);
+    clauses.push(
+      `(d.donante_nombre ILIKE ${placeholder} OR COALESCE(d.recibido_por, '') ILIKE ${placeholder} OR COALESCE(p.titulo, '') ILIKE ${placeholder} OR COALESCE(d.descripcion_especie, '') ILIKE ${placeholder} OR COALESCE(d.codigo_donacion, 'KIR-DON-' || d.id::text) ILIKE ${placeholder})`
+    );
   }
 
   return { whereSql: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
@@ -121,12 +131,14 @@ export function buildDonationHistoryConditions(filters: DonationHistoryFilters) 
 export function toDonationHistoryItem(row: DonationHistoryRow) {
   return {
     id: row.id,
+    ...(row.codigo_donacion ? { codigo_donacion: row.codigo_donacion } : {}),
+    ...(row.estado_entrega ? { estado_entrega: row.estado_entrega } : {}),
     donante_nombre: row.donante_nombre,
     tipo_donacion: row.tipo_donacion,
     monto_bob: row.tipo_donacion === 'economica' ? Number(row.monto_bob) : null,
-    descripcion_especie: row.tipo_donacion === 'especie' ? row.descripcion_especie : null,
+    descripcion_especie: row.tipo_donacion === 'especie' ? row.descripcion_especie ?? null : null,
     fecha_recepcion: row.fecha_recepcion,
-    recibido_por: row.recibido_por,
+    recibido_por: row.recibido_por ?? null,
     proyecto: row.proyecto_destino_id
       ? {
           id: row.proyecto_destino_id,

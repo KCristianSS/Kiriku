@@ -1,6 +1,3 @@
-import express, { Request, Response, Router } from 'express';
-import { query, supabaseAdmin } from './supabase';
-import { authenticate, requirePermission, type AuthenticatedRequest } from './authorization';
 import express, { NextFunction, Request, Response, Router } from 'express';
 import { dbPool, isDatabaseConfigured, query, supabaseAdmin } from './supabase';
 import {
@@ -14,15 +11,6 @@ import {
   validatePersonalScores,
 } from './personal-evaluation';
 import {
-  normalizeRecipientEmail,
-  validateDonationNeedRequest,
-} from './donation-needs';
-import {
-  buildDonationHistoryConditions,
-  parseDonationHistoryFilters,
-  toDonationHistoryItem,
-  type DonationHistoryRow,
-} from './donation-history';
   calculateDonationBalance,
   canTransitionDeliveryState,
   deriveDonationDeliveryStatus,
@@ -34,6 +22,16 @@ import {
   validateDeliveryRegistration,
   validateOfferedDonation,
 } from './donation-traceability';
+import {
+  normalizeRecipientEmail,
+  validateDonationNeedRequest,
+} from './donation-needs';
+import {
+  buildDonationHistoryConditions,
+  parseDonationHistoryFilters,
+  toDonationHistoryItem,
+  type DonationHistoryRow,
+} from './donation-history';
 import { authenticate, requirePermission, type AuthenticatedRequest } from './authorization';
 
 const router: Router = express.Router();
@@ -2973,61 +2971,6 @@ router.patch('/postulaciones/:id/status', async (req: Request, res: Response) =>
 // -------------------------------------------------------------
 // 4. DONACIONES, VÍNCULO DONANTE-RECEPTOR Y TRAZABILIDAD (KIR-32)
 // -------------------------------------------------------------
-router.get('/donaciones/historial', async (req: Request, res: Response) => {
-  try {
-    const parsed = parseDonationHistoryFilters(req.query as Record<string, unknown>);
-    if (!parsed.valid) {
-      return res.status(400).json({ error: parsed.error });
-    }
-
-    const { filters } = parsed;
-    const { whereSql, params } = buildDonationHistoryConditions(filters);
-    const summaryRows = await query<any>(
-      `SELECT COUNT(*)::int AS total,
-              COALESCE(SUM(CASE WHEN d.tipo_donacion = 'economica' THEN d.monto_bob ELSE 0 END), 0) AS monto_economico_bob,
-              COUNT(*) FILTER (WHERE d.tipo_donacion = 'especie')::int AS aportes_especie
-       FROM donaciones d
-       LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
-       ${whereSql}`,
-      params
-    );
-
-    const limitPlaceholder = `$${params.length + 1}`;
-    const offsetPlaceholder = `$${params.length + 2}`;
-    const rows = await query<DonationHistoryRow>(
-      `SELECT d.id, d.donante_nombre, d.tipo_donacion, d.monto_bob,
-              d.descripcion_especie, d.proyecto_destino_id, d.recibido_por,
-              d.fecha_recepcion, p.titulo AS proyecto_titulo, p.ubicacion AS proyecto_ubicacion
-       FROM donaciones d
-       LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
-       ${whereSql}
-       ORDER BY d.fecha_recepcion DESC, d.id DESC
-       LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
-      [...params, filters.limite, (filters.pagina - 1) * filters.limite]
-    );
-    const summary = summaryRows[0] || { total: 0, monto_economico_bob: 0, aportes_especie: 0 };
-    const total = Number(summary.total);
-
-    res.json({
-      items: rows.map(toDonationHistoryItem),
-      resumen: {
-        total_aportes: total,
-        monto_economico_bob: Number(summary.monto_economico_bob),
-        aportes_especie: Number(summary.aportes_especie),
-      },
-      paginacion: {
-        pagina: filters.pagina,
-        limite: filters.limite,
-        paginas: Math.ceil(total / filters.limite),
-      },
-    });
-  } catch (err: any) {
-    console.error('Error fetching donation history:', err);
-    res.status(500).json({ error: 'Error al consultar el historial de donaciones' });
-  }
-});
-
-router.get('/donaciones', async (req: Request, res: Response) => {
 function mapEntregaRow(e: any) {
   return {
     id: e.id,
@@ -3088,25 +3031,6 @@ router.get('/donaciones/donantes', async (_req: Request, res: Response) => {
 router.get('/donaciones/receptores', async (_req: Request, res: Response) => {
   try {
     const rows = await query(`
-  try {
-    const rows = await query(`
-      SELECT dn.*, COUNT(d.id)::int AS total_donaciones
-      FROM donantes dn
-      LEFT JOIN donaciones d ON d.donante_id = dn.id
-      GROUP BY dn.id
-      ORDER BY dn.created_at DESC, dn.id DESC
-      LIMIT 100
-    `);
-    res.json(rows);
-  } catch (err: any) {
-    console.error('Error fetching donantes:', err);
-    res.status(500).json({ error: 'Error al consultar donantes registrados' });
-  }
-});
-
-router.get('/donaciones/receptores', async (_req: Request, res: Response) => {
-  try {
-    const rows = await query(`
       SELECT r.*,
              p.titulo AS proyecto_titulo,
              o.nombre AS organizacion_nombre
@@ -3120,6 +3044,73 @@ router.get('/donaciones/receptores', async (_req: Request, res: Response) => {
   } catch (err: any) {
     console.error('Error fetching receptores:', err);
     res.status(500).json({ error: 'Error al consultar receptores registrados' });
+  }
+});
+
+// KIR-33 (KIR-35): Consultar historial de donaciones con filtros y paginación
+router.get('/donaciones/historial', async (req: Request, res: Response) => {
+  try {
+    const parsed = parseDonationHistoryFilters(req.query as Record<string, unknown>);
+    if (!parsed.valid) {
+      return res.status(400).json({ error: parsed.error });
+    }
+
+    const { filters } = parsed;
+    const { whereSql, params } = buildDonationHistoryConditions(filters);
+
+    const summaryRows = await query<any>(
+      `SELECT COUNT(*)::int AS total,
+              COALESCE(SUM(CASE WHEN d.tipo_donacion = 'economica' THEN d.monto_bob ELSE 0 END), 0) AS monto_economico_bob,
+              COUNT(*) FILTER (WHERE d.tipo_donacion = 'especie')::int AS aportes_especie
+       FROM donaciones d
+       LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
+       ${whereSql}`,
+      params
+    );
+
+    const limitPlaceholder = `$${params.length + 1}`;
+    const offsetPlaceholder = `$${params.length + 2}`;
+
+    const rows = await query<DonationHistoryRow>(
+      `SELECT d.id,
+              COALESCE(d.codigo_donacion, 'KIR-DON-' || d.id::text) AS codigo_donacion,
+              COALESCE(d.estado_entrega, 'recibida') AS estado_entrega,
+              d.donante_nombre,
+              d.tipo_donacion,
+              d.monto_bob,
+              d.descripcion_especie,
+              d.proyecto_destino_id,
+              d.recibido_por,
+              d.fecha_recepcion,
+              p.titulo AS proyecto_titulo,
+              p.ubicacion AS proyecto_ubicacion
+       FROM donaciones d
+       LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
+       ${whereSql}
+       ORDER BY d.fecha_recepcion DESC, d.id DESC
+       LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+      [...params, filters.limite, (filters.pagina - 1) * filters.limite]
+    );
+
+    const summary = summaryRows[0] || { total: 0, monto_economico_bob: 0, aportes_especie: 0 };
+    const total = Number(summary.total);
+
+    res.json({
+      items: rows.map(toDonationHistoryItem),
+      resumen: {
+        total_aportes: total,
+        monto_economico_bob: Number(summary.monto_economico_bob),
+        aportes_especie: Number(summary.aportes_especie),
+      },
+      paginacion: {
+        pagina: filters.pagina,
+        limite: filters.limite,
+        paginas: Math.ceil(total / filters.limite),
+      },
+    });
+  } catch (err: any) {
+    console.error('Error fetching donation history:', err);
+    res.status(500).json({ error: 'Error al consultar el historial de donaciones' });
   }
 });
 
@@ -3143,7 +3134,6 @@ router.get('/donaciones', async (req: Request, res: Response) => {
     if (
       estadoEntregaFilter &&
       ['ofrecida', 'recibida', 'en_preparacion', 'entrega_parcial', 'entregada'].includes(estadoEntregaFilter)
-      ['recibida', 'en_preparacion', 'entrega_parcial', 'entregada'].includes(estadoEntregaFilter)
     ) {
       params.push(estadoEntregaFilter);
       conditions.push(`COALESCE(d.estado_entrega, 'recibida') = $${params.length}`);
@@ -3239,7 +3229,6 @@ router.get('/donaciones', async (req: Request, res: Response) => {
         entregas,
         r.estado_entrega
       );
-      const derivedStatus = deriveDonationDeliveryStatus(r.tipo_donacion, r.monto_bob, entregas);
 
       return {
         ...r,
@@ -3351,7 +3340,6 @@ router.get('/donaciones/:id/trazabilidad', async (req: Request, res: Response) =
     const estadoEntrega =
       d.estado_entrega ||
       deriveDonationDeliveryStatus(d.tipo_donacion, d.monto_bob, entregas, d.estado_entrega);
-    const estadoEntrega = d.estado_entrega || deriveDonationDeliveryStatus(d.tipo_donacion, d.monto_bob, entregas);
     const receptoresUnicos = new Set(entregas.map((e) => e.receptor_id));
 
     const donante = {
@@ -4100,7 +4088,45 @@ router.patch('/donaciones/entregas/:entregaId', async (req: Request, res: Respon
   }
 });
 
-// KIR-43: Registrar en una sola operación la necesidad y los datos de su receptor.
+// KIR-31 (KIR-43): Listar y registrar necesidades de donación vinculadas a su receptor
+router.get('/necesidades-donacion', async (_req: Request, res: Response) => {
+  try {
+    const rows = await query(
+      `SELECT n.*,
+              json_build_object(
+                'nombre', r.nombre,
+                'email', r.email,
+                'telefono', r.telefono,
+                'organizacion', r.organizacion
+              ) AS receptor,
+              CASE
+                WHEN p.id IS NOT NULL THEN json_build_object(
+                  'id', p.id,
+                  'titulo', p.titulo,
+                  'ubicacion', p.ubicacion
+                )
+                ELSE NULL
+              END AS proyecto
+       FROM necesidades_donacion n
+       JOIN receptores_donacion r ON r.id = n.receptor_id
+       LEFT JOIN proyectos p ON p.id = n.proyecto_destino_id
+       ORDER BY n.created_at DESC, n.id DESC
+       LIMIT 100`
+    );
+
+    res.json(
+      rows.map((row: any) => ({
+        ...row,
+        monto_objetivo: row.monto_objetivo !== null && row.monto_objetivo !== undefined ? Number(row.monto_objetivo) : null,
+        cantidad_objetivo: row.cantidad_objetivo !== null && row.cantidad_objetivo !== undefined ? Number(row.cantidad_objetivo) : null,
+      }))
+    );
+  } catch (err: any) {
+    console.error('Error fetching donation needs:', err);
+    res.status(500).json({ error: 'Error al consultar las necesidades de donación' });
+  }
+});
+
 router.post('/necesidades-donacion', async (req: Request, res: Response) => {
   try {
     const request = req.body ?? {};
@@ -4109,21 +4135,29 @@ router.post('/necesidades-donacion', async (req: Request, res: Response) => {
       return res.status(400).json({ error: validation.error });
     }
 
-    const projectId = request.proyecto_destino_id || null;
+    const projectId =
+      request.proyecto_destino_id != null && request.proyecto_destino_id !== ''
+        ? Number(request.proyecto_destino_id)
+        : null;
+
+    let proyectoObj: { id: number | string; titulo: string; ubicacion: string } | null = null;
     if (projectId) {
-      const project = await query<{ id: number | string }>(
-        `SELECT id FROM proyectos WHERE id = $1 AND estado = 'aprobado' LIMIT 1`,
+      const project = await query<{ id: number | string; titulo: string; ubicacion: string }>(
+        `SELECT id, titulo, ubicacion FROM proyectos WHERE id = $1 AND estado = 'aprobado' LIMIT 1`,
         [projectId]
       );
       if (!project.length) {
         return res.status(400).json({ error: 'El proyecto seleccionado no existe o no está aprobado' });
       }
+      proyectoObj = project[0];
     }
 
     const amount = request.tipo_necesidad === 'economica' ? Number(request.monto_objetivo) : null;
-    const quantity = request.tipo_necesidad === 'especie' && request.cantidad_objetivo
-      ? Number(request.cantidad_objetivo)
-      : null;
+    const quantity =
+      request.tipo_necesidad === 'especie' && request.cantidad_objetivo != null && request.cantidad_objetivo !== ''
+        ? Number(request.cantidad_objetivo)
+        : null;
+
     const rows = await query(
       `WITH receptor AS (
          INSERT INTO receptores_donacion (nombre, email, telefono, organizacion)
@@ -4167,7 +4201,13 @@ router.post('/necesidades-donacion', async (req: Request, res: Response) => {
       ]
     );
 
-    res.status(201).json(rows[0]);
+    const created = rows[0];
+    res.status(201).json({
+      ...created,
+      monto_objetivo: created.monto_objetivo !== null && created.monto_objetivo !== undefined ? Number(created.monto_objetivo) : null,
+      cantidad_objetivo: created.cantidad_objetivo !== null && created.cantidad_objetivo !== undefined ? Number(created.cantidad_objetivo) : null,
+      proyecto: proyectoObj,
+    });
   } catch (err: any) {
     console.error('Error registering donation need:', err);
     res.status(500).json({ error: 'Error al registrar la necesidad de donación' });
@@ -4196,8 +4236,6 @@ router.get('/metrics', async (req: Request, res: Response) => {
     const totalDonacionesOfrecidas = await query(
       "SELECT COUNT(*) as c FROM donaciones WHERE estado_entrega = 'ofrecida'"
     );
-    const totalDonacionesBob = await query("SELECT COALESCE(SUM(monto_bob), 0) as s FROM donaciones WHERE tipo_donacion = 'economica'");
-    const totalDonacionesEspecie = await query("SELECT COUNT(*) as c FROM donaciones WHERE tipo_donacion = 'especie'");
     const totalEntregadoBob = await query(
       "SELECT COALESCE(SUM(monto_entregado_bob), 0) as s FROM entregas_donaciones WHERE estado IN ('entregada', 'verificada')"
     );
