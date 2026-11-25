@@ -29,6 +29,9 @@ import type {
   ValidarEdadResponse,
   ProposeProjectPayload,
   CreateDonationPayload,
+  DonationNeedRequestPayload,
+  DonationNeedRequestResponse,
+  DonationHistoryResponse,
   OfferDonationPayload,
   ConfirmDonationReceiptPayload,
   RegisterDeliveryPayload,
@@ -445,6 +448,21 @@ export const api = {
     return res.data;
   },
 
+  async createDonationNeedRequest(payload: DonationNeedRequestPayload): Promise<DonationNeedRequestResponse> {
+    const res = await apiClient.post<DonationNeedRequestResponse>('/necesidades-donacion', payload);
+    return res.data;
+  },
+
+  async getDonationHistory(params?: {
+    q?: string;
+    tipo?: 'economica' | 'especie';
+    proyecto_destino_id?: number | string;
+    fecha_desde?: string;
+    fecha_hasta?: string;
+    pagina?: number;
+    limite?: number;
+  }): Promise<DonationHistoryResponse> {
+    const res = await apiClient.get<DonationHistoryResponse>('/donaciones/historial', { params });
   // KIR-30 / KIR-47: Registrar donación ofrecida directamente por un donante
   async offerDonation(
     payload: OfferDonationPayload

@@ -661,6 +661,62 @@ Permite gestionar proyectos comunitarios, postulaciones de voluntarios con valid
         },
       },
     },
+    '/donaciones/historial': {
+      get: {
+        tags: ['Donaciones'],
+        summary: 'Consultar historial público y trazabilidad de donaciones',
+        description: 'Permite filtrar aportes por texto, tipo, proyecto y fechas. La respuesta omite los correos de donantes.',
+        parameters: [
+          { name: 'q', in: 'query', schema: { type: 'string', maxLength: 120 }, description: 'Busca por donante, persona receptora o proyecto.' },
+          { name: 'tipo', in: 'query', schema: { type: 'string', enum: ['economica', 'especie'] } },
+          { name: 'proyecto_destino_id', in: 'query', schema: { type: 'integer', minimum: 1 } },
+          { name: 'fecha_desde', in: 'query', schema: { type: 'string', format: 'date' } },
+          { name: 'fecha_hasta', in: 'query', schema: { type: 'string', format: 'date' } },
+          { name: 'pagina', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } },
+          { name: 'limite', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 50, default: 20 } },
+        ],
+        responses: {
+          200: { description: 'Aportes ordenados por fecha, con resumen, destino y datos de paginación.' },
+          400: { description: 'Filtros inválidos.' },
+        },
+      },
+    },
+    '/necesidades-donacion': {
+      post: {
+        tags: ['Donaciones'],
+        summary: 'Registrar una necesidad de donación con datos del receptor',
+        description: 'Registra o actualiza el receptor por correo y crea su solicitud de apoyo en una sola operación.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['receptor_nombre', 'receptor_email', 'receptor_telefono', 'tipo_necesidad', 'titulo', 'descripcion'],
+                properties: {
+                  receptor_nombre: { type: 'string', example: 'Ana Pérez' },
+                  receptor_email: { type: 'string', format: 'email', example: 'contacto@comunidad.org' },
+                  receptor_telefono: { type: 'string', example: '+591 70000000' },
+                  receptor_organizacion: { type: 'string', example: 'Comunidad Villa Esperanza' },
+                  tipo_necesidad: { type: 'string', enum: ['economica', 'especie'] },
+                  titulo: { type: 'string', example: 'Material escolar para el centro comunitario' },
+                  descripcion: { type: 'string' },
+                  monto_objetivo: { type: 'number', example: 1250.5 },
+                  cantidad_objetivo: { type: 'number', example: 30 },
+                  unidad_medida: { type: 'string', example: 'kits' },
+                  fecha_necesaria: { type: 'string', format: 'date' },
+                  proyecto_destino_id: { type: 'integer', nullable: true },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: 'Solicitud registrada con el receptor y estado pendiente.' },
+          400: { description: 'Datos incompletos o inválidos.' },
+        },
+      },
+    },
     '/metrics': {
       get: {
         tags: ['Métricas'],
