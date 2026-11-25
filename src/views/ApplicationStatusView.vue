@@ -17,21 +17,45 @@ import {
   MapPin,
   Compass,
   Info,
+  Download,
 } from 'lucide-vue-next';
 import type { ProcesoSeveridad } from '../types';
+import { useAuthAccess, validateNumericBoundsClient } from '../composables/useAuthAccess';
 
 const route = useRoute();
 const router = useRouter();
 const applicationsStore = useApplicationsStore();
+const { canExport, exporting, exportNotice, refreshAccess, downloadCsv } = useAuthAccess();
 
 const searchInput = ref('');
+const filterEstado = ref('');
+const avanceMin = ref('');
+const avanceMax = ref('');
+const sortOrder = ref<'recientes' | 'avance_desc' | 'avance_asc' | 'proyecto_asc'>('recientes');
+const rangeError = ref<string | null>(null);
 const hasSearched = ref(false);
 const autoRefreshEnabled = ref(false);
 let pollingTimer: ReturnType<typeof setInterval> | null = null;
 
+function buildTrackingParams() {
+  return {
+    estado: filterEstado.value || undefined,
+    avance_min: avanceMin.value !== '' ? avanceMin.value : undefined,
+    avance_max: avanceMax.value !== '' ? avanceMax.value : undefined,
+    ordenar: sortOrder.value,
+  };
+}
+
 async function performSearch() {
   const query = searchInput.value.trim();
   if (!query) return;
+  const err = validateNumericBoundsClient(avanceMin.value, avanceMax.value, {
+    label: 'avance (%)',
+    maxAllowed: 100,
+  });
+  rangeError.value = err;
+  if (err) return;
+
   hasSearched.value = true;
 
   if (route.query.busqueda !== query) {
@@ -39,17 +63,33 @@ async function performSearch() {
   }
 
   try {
-    await applicationsStore.trackApplication(query);
+    await applicationsStore.trackApplication(query, buildTrackingParams());
   } catch (err) {
     console.error('Error tracking application:', err);
   }
+}
+
+async function handleExportTracking() {
+  const query = searchInput.value.trim();
+  if (!query) return;
+  const err = validateNumericBoundsClient(avanceMin.value, avanceMax.value, {
+    label: 'avance (%)',
+    maxAllowed: 100,
+  });
+  rangeError.value = err;
+  if (err) return;
+
+  await downloadCsv('postulaciones-seguimiento', {
+    busqueda: query,
+    ...buildTrackingParams(),
+  });
 }
 
 async function manualRefresh() {
   const query = searchInput.value.trim();
   if (!query) return;
   try {
-    await applicationsStore.refreshTracking(query);
+    await applicationsStore.trackApplication(query, buildTrackingParams());
   } catch (err) {
     console.error('Error refreshing tracking:', err);
   }
@@ -126,6 +166,7 @@ function formatLastChecked(value?: string | null) {
 }
 
 onMounted(() => {
+  refreshAccess();
   if (route.query.busqueda && typeof route.query.busqueda === 'string') {
     searchInput.value = route.query.busqueda;
     performSearch();
@@ -157,28 +198,97 @@ onUnmounted(() => {
         </p>
 
         <!-- Search input box -->
-        <form @submit.prevent="performSearch" class="flex flex-col sm:flex-row gap-3">
-          <div class="relative flex-1">
-            <Search class="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              v-model="searchInput"
-              type="text"
-              required
-              placeholder="Ej. 8492019 LP, correo@ejemplo.com o KIR-12"
-              aria-label="Cédula de identidad, correo electrónico o código de seguimiento"
-              class="w-full pl-10 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-[#289EAB] focus:bg-white transition-all font-mono"
-            />
+        <form @submit.prevent="performSearch" class="space-y-3">
+          <div class="flex flex-col sm:flex-row gap-3">
+            <div class="relative flex-1">
+              <Search class="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                v-model="searchInput"
+                type="text"
+                required
+                placeholder="Ej. 8492019 LP, correo@ejemplo.com o KIR-12"
+                aria-label="Cédula de identidad, correo electrónico o código de seguimiento"
+                class="w-full pl-10 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-[#289EAB] focus:bg-white transition-all font-mono"
+              />
+            </div>
+
+            <button
+              type="submit"
+              :disabled="applicationsStore.loading || !searchInput.trim()"
+              class="px-6 py-3 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-sm font-semibold rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:bg-stone-200 disabled:text-stone-400 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
+            >
+              <span v-if="applicationsStore.loading">Consultando...</span>
+              <span v-else>Consultar Estado</span>
+              <ArrowRight v-if="!applicationsStore.loading" class="w-4 h-4" />
+            </button>
           </div>
 
-          <button
-            type="submit"
-            :disabled="applicationsStore.loading || !searchInput.trim()"
-            class="px-6 py-3 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-sm font-semibold rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:bg-stone-200 disabled:text-stone-400 disabled:cursor-not-allowed"
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-100 text-xs">
+            <div class="flex flex-wrap items-center gap-2">
+              <select
+                v-model="filterEstado"
+                @change="searchInput.trim() && performSearch()"
+                class="px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs text-stone-700 focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
+              >
+                <option value="">Todos los estados</option>
+                <option value="en_proceso">En proceso</option>
+                <option value="observado">Observado</option>
+                <option value="aprobado">Aprobado</option>
+                <option value="rechazado">Rechazado</option>
+                <option value="reasignacion">Reasignación</option>
+              </select>
+
+              <input
+                v-model="avanceMin"
+                type="number"
+                min="0"
+                max="100"
+                placeholder="Avance % mín."
+                aria-label="Avance mínimo"
+                class="w-28 px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs tabular-nums"
+              />
+              <input
+                v-model="avanceMax"
+                type="number"
+                min="0"
+                max="100"
+                placeholder="Avance % máx."
+                aria-label="Avance máximo"
+                class="w-28 px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs tabular-nums"
+              />
+
+              <select
+                v-model="sortOrder"
+                @change="searchInput.trim() && performSearch()"
+                class="px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs text-stone-700 focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
+              >
+                <option value="recientes">Más recientes</option>
+                <option value="avance_desc">Mayor % de avance</option>
+                <option value="avance_asc">Menor % de avance</option>
+                <option value="proyecto_asc">Proyecto (A-Z)</option>
+              </select>
+            </div>
+
+            <button
+              v-if="canExport && searchInput.trim()"
+              type="button"
+              @click="handleExportTracking"
+              :disabled="exporting"
+              class="px-3.5 py-1.5 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-xl transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+            >
+              <Download class="w-3.5 h-3.5" />
+              <span>{{ exporting ? 'Exportando...' : 'Exportar CSV' }}</span>
+            </button>
+          </div>
+
+          <p v-if="rangeError" role="alert" class="text-xs font-medium text-rose-700">{{ rangeError }}</p>
+          <p
+            v-if="exportNotice"
+            role="status"
+            :class="['text-xs font-medium', exportNotice.type === 'success' ? 'text-emerald-700' : 'text-rose-700']"
           >
-            <span v-if="applicationsStore.loading">Consultando...</span>
-            <span v-else>Consultar Estado</span>
-            <ArrowRight v-if="!applicationsStore.loading" class="w-4 h-4" />
-          </button>
+            {{ exportNotice.text }}
+          </p>
         </form>
       </div>
     </div>

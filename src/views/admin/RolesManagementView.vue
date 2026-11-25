@@ -15,13 +15,16 @@ import {
   Search,
   CheckCircle2,
   AlertCircle,
+  Download,
 } from 'lucide-vue-next';
+import { useAuthAccess } from '../../composables/useAuthAccess';
 
 type Permission = { id: number; code: string; name: string; description?: string };
 type Role = { id: number | string; code: string; name: string; description: string; active: boolean; permissions: Permission[] };
 type RoleUser = { id: string; email: string; roles: Array<{ id: number | string; name: string }> };
 
 const router = useRouter();
+const { canExport, exporting, exportNotice, refreshAccess, downloadCsv } = useAuthAccess();
 
 const roles = ref<Role[]>([]);
 const permissions = ref<Permission[]>([]);
@@ -194,7 +197,16 @@ async function logout() {
   router.push('/login');
 }
 
-onMounted(load);
+async function handleExportRoles() {
+  await downloadCsv('roles', {
+    q: queryText.value.trim() || undefined,
+  });
+}
+
+onMounted(() => {
+  refreshAccess();
+  load();
+});
 </script>
 
 <template>
@@ -212,14 +224,25 @@ onMounted(load);
         </p>
       </div>
 
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
+        <button
+          v-if="canExport"
+          type="button"
+          @click="handleExportRoles"
+          :disabled="exporting"
+          class="px-3.5 py-2 rounded-xl bg-[#289EAB] hover:bg-[#1E7B85] text-white text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60"
+        >
+          <Download class="w-3.5 h-3.5" />
+          <span>{{ exporting ? 'Exportando...' : 'Exportar CSV' }}</span>
+        </button>
+
         <div class="hidden sm:block text-right">
           <span class="text-xs text-stone-400 block">Conectado como</span>
           <span class="text-xs font-bold text-stone-700 font-mono">{{ currentUserEmail }}</span>
         </div>
         <button
           @click="logout"
-          class="px-3.5 py-2 rounded-xl bg-stone-100 hover:bg-red-50 hover:text-red-700 text-stone-700 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer border border-stone-200"
+          class="px-3.5 py-2 rounded-xl bg-stone-100 hover:bg-red-50 hover:text-red-700 text-stone-700 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer border border-stone-200 whitespace-nowrap shrink-0"
           title="Cerrar sesión"
         >
           <LogOut class="w-4 h-4 text-red-500" />
@@ -229,6 +252,14 @@ onMounted(load);
     </header>
 
     <!-- Notices & Errors -->
+    <div
+      v-if="exportNotice"
+      role="status"
+      :class="['rounded-2xl border p-4 text-sm', exportNotice.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800']"
+    >
+      {{ exportNotice.text }}
+    </div>
+
     <div v-if="notice" role="status" class="rounded-2xl bg-emerald-50 border border-emerald-200 p-4 text-sm text-emerald-800 flex items-center gap-3 shadow-xs">
       <CheckCircle2 class="w-5 h-5 text-emerald-600 shrink-0" />
       <span>{{ notice }}</span>

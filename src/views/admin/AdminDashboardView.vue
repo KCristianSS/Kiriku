@@ -25,6 +25,7 @@ import {
   Brain,
   MessageCircle,
   HeartPulse,
+  FileSpreadsheet,
 } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -86,10 +87,18 @@ onMounted(() => {
           </p>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <router-link
+            to="/admin/logs"
+            class="px-4 py-2 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-xs font-semibold rounded-xl transition-all inline-flex items-center gap-1.5 shadow-xs whitespace-nowrap shrink-0"
+          >
+            <FileSpreadsheet class="w-3.5 h-3.5" />
+            <span>Logs y Caché</span>
+          </router-link>
+
           <router-link
             to="/admin/roles"
-            class="px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-xl transition-all inline-flex items-center gap-1.5 shadow-xs"
+            class="px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-xl transition-all inline-flex items-center gap-1.5 shadow-xs whitespace-nowrap shrink-0"
           >
             <KeyRound class="w-3.5 h-3.5" />
             <span>Roles y Usuarios</span>
@@ -389,6 +398,26 @@ onMounted(() => {
           </div>
         </div>
         <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#EB455F] group-hover:translate-x-1 transition-all shrink-0" />
+      </router-link>
+
+      <router-link
+        to="/admin/logs"
+        class="bg-white rounded-2xl border border-stone-200 hover:border-[#289EAB] p-5 shadow-xs transition-all flex items-center justify-between group"
+      >
+        <div class="flex items-center gap-3.5">
+          <div class="w-11 h-11 bg-[#E8F6F8] text-[#1E7B85] rounded-xl flex items-center justify-center shrink-0">
+            <FileSpreadsheet class="w-5 h-5" />
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-stone-900 group-hover:text-[#1E7B85] transition-colors">
+              Logs y Caché del Sistema
+            </h3>
+            <p class="text-[11px] text-stone-500 mt-0.5 line-clamp-2">
+              Bitácora de exportaciones CSV (tamaño, duración), accesos RBAC y estado de caché.
+            </p>
+          </div>
+        </div>
+        <ArrowRight class="w-4 h-4 text-stone-400 group-hover:text-[#1E7B85] group-hover:translate-x-1 transition-all shrink-0" />
       </router-link>
 
 

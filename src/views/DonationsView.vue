@@ -30,9 +30,11 @@ import {
   Phone,
   Heart,
   Sparkles,
+  Download,
 } from 'lucide-vue-next';
 import { useDonationsStore } from '../stores/donations';
 import { api } from '../api/client';
+import { useAuthAccess, validateNumericBoundsClient } from '../composables/useAuthAccess';
 import type {
   Donacion,
   DonacionEstadoEntrega,
@@ -52,6 +54,7 @@ type DonationsTab = 'trazabilidad' | 'historial' | 'necesidades';
 const route = useRoute();
 const router = useRouter();
 const store = useDonationsStore();
+const { canExport, exporting, exportNotice, refreshAccess, downloadCsv } = useAuthAccess();
 
 function resolveTabFromQuery(q: unknown): DonationsTab {
   if (q === 'historial' || q === 'necesidades' || q === 'trazabilidad') {
@@ -90,7 +93,12 @@ const dbConfigured = ref(true);
 // Filtros del listado principal (KIR-32)
 const searchQuery = ref('');
 const tipoFilter = ref<'todos' | DonacionTipo>('todos');
+const categoriaFilter = ref('');
 const estadoFilter = ref<'todos' | DonacionEstadoEntrega>('todos');
+const montoMin = ref('');
+const montoMax = ref('');
+const donationsSort = ref<'recientes' | 'monto_desc' | 'monto_asc' | 'donante_asc'>('recientes');
+const donationsRangeError = ref<string | null>(null);
 
 // Mensajes de feedback
 const feedbackSuccess = ref<string | null>(null);
@@ -151,9 +159,14 @@ const historyLoading = ref(false);
 const historyError = ref('');
 const historyQuery = ref('');
 const historyType = ref('');
+const historyCategory = ref('');
 const historyProject = ref('');
 const historyFrom = ref('');
 const historyTo = ref('');
+const historyMontoMin = ref('');
+const historyMontoMax = ref('');
+const historySort = ref<'recientes' | 'monto_desc' | 'monto_asc' | 'donante_asc'>('recientes');
+const historyRangeError = ref<string | null>(null);
 const historyPage = ref(1);
 
 // Estado KIR-31: Registrar Necesidad y Receptor de Donación
@@ -162,6 +175,12 @@ const needError = ref('');
 const needResult = ref<DonationNeedRequestResponse | null>(null);
 const needsList = ref<DonationNeedRequestResponse[]>([]);
 const needsLoading = ref(false);
+const needsQuery = ref('');
+const needsType = ref('');
+const needsMontoMin = ref('');
+const needsMontoMax = ref('');
+const needsSort = ref<'recientes' | 'monto_desc' | 'monto_asc' | 'titulo_asc'>('recientes');
+const needsRangeError = ref<string | null>(null);
 
 const needForm = reactive<DonationNeedRequestPayload>({
   receptor_nombre: '',
@@ -266,14 +285,23 @@ const needStatusLabels: Record<string, { label: string; classes: string }> = {
 
 const filteredDonations = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
-  return store.donations.filter((d) => {
+  const minVal = montoMin.value !== '' ? Number(montoMin.value) : null;
+  const maxVal = montoMax.value !== '' ? Number(montoMax.value) : null;
+
+  const list = store.donations.filter((d) => {
     if (tipoFilter.value !== 'todos' && d.tipo_donacion !== tipoFilter.value) {
+      return false;
+    }
+    if (categoriaFilter.value && (d.categoria_especie || '').toLowerCase() !== categoriaFilter.value.toLowerCase()) {
       return false;
     }
     const estado = (d.estado_entrega || 'recibida') as DonacionEstadoEntrega;
     if (estadoFilter.value !== 'todos' && estado !== estadoFilter.value) {
       return false;
     }
+    const amt = Number(d.monto_bob || 0);
+    if (minVal !== null && Number.isFinite(minVal) && amt < minVal) return false;
+    if (maxVal !== null && Number.isFinite(maxVal) && amt > maxVal) return false;
     if (!q) return true;
     const codigo = (d.codigo_donacion || `KIR-DON-${d.id}`).toLowerCase();
     const donante = (d.donante_nombre || '').toLowerCase();
@@ -292,7 +320,52 @@ const filteredDonations = computed(() => {
       receptorHit
     );
   });
+
+  return [...list].sort((a, b) => {
+    if (donationsSort.value === 'monto_desc') return Number(b.monto_bob || 0) - Number(a.monto_bob || 0);
+    if (donationsSort.value === 'monto_asc') return Number(a.monto_bob || 0) - Number(b.monto_bob || 0);
+    if (donationsSort.value === 'donante_asc') return (a.donante_nombre || '').localeCompare(b.donante_nombre || '', 'es');
+    return new Date(b.fecha_recepcion || 0).getTime() - new Date(a.fecha_recepcion || 0).getTime();
+  });
 });
+
+async function applyDonationsFilter() {
+  const err = validateNumericBoundsClient(montoMin.value, montoMax.value, {
+    label: 'monto (Bs.)',
+    maxAllowed: 100000000,
+  });
+  donationsRangeError.value = err;
+  if (err) return;
+
+  await store.fetchDonations({
+    q: searchQuery.value.trim() || undefined,
+    tipo: tipoFilter.value !== 'todos' ? tipoFilter.value : undefined,
+    categoria: categoriaFilter.value || undefined,
+    estado_entrega: estadoFilter.value !== 'todos' ? estadoFilter.value : undefined,
+    monto_min: montoMin.value !== '' ? montoMin.value : undefined,
+    monto_max: montoMax.value !== '' ? montoMax.value : undefined,
+    ordenar: donationsSort.value,
+  });
+}
+
+async function handleExportDonations() {
+  const err = validateNumericBoundsClient(montoMin.value, montoMax.value, {
+    label: 'monto (Bs.)',
+    maxAllowed: 100000000,
+  });
+  donationsRangeError.value = err;
+  if (err) return;
+
+  await downloadCsv('donaciones', {
+    q: searchQuery.value.trim() || undefined,
+    tipo: tipoFilter.value !== 'todos' ? tipoFilter.value : undefined,
+    categoria: categoriaFilter.value || undefined,
+    estado_entrega: estadoFilter.value !== 'todos' ? estadoFilter.value : undefined,
+    monto_min: montoMin.value !== '' ? montoMin.value : undefined,
+    monto_max: montoMax.value !== '' ? montoMax.value : undefined,
+    ordenar: donationsSort.value,
+  });
+}
 
 const kpiResumen = computed(() => {
   let totalBob = 0;
@@ -387,15 +460,26 @@ function showBannerError(msg: string) {
 
 async function loadHistory(page = 1) {
   if (!dbConfigured.value) return;
+  const rangeErr = validateNumericBoundsClient(historyMontoMin.value, historyMontoMax.value, {
+    label: 'monto (Bs.)',
+    maxAllowed: 100000000,
+  });
+  historyRangeError.value = rangeErr;
+  if (rangeErr) return;
+
   historyLoading.value = true;
   historyError.value = '';
   try {
     history.value = await api.getDonationHistory({
       q: historyQuery.value.trim() || undefined,
       tipo: historyType.value ? (historyType.value as 'economica' | 'especie') : undefined,
+      categoria: historyCategory.value || undefined,
       proyecto_destino_id: historyProject.value || undefined,
       fecha_desde: historyFrom.value || undefined,
       fecha_hasta: historyTo.value || undefined,
+      monto_min: historyMontoMin.value !== '' ? historyMontoMin.value : undefined,
+      monto_max: historyMontoMax.value !== '' ? historyMontoMax.value : undefined,
+      ordenar: historySort.value,
       pagina: page,
       limite: 10,
     });
@@ -407,25 +491,81 @@ async function loadHistory(page = 1) {
   }
 }
 
+async function handleExportHistory() {
+  const rangeErr = validateNumericBoundsClient(historyMontoMin.value, historyMontoMax.value, {
+    label: 'monto (Bs.)',
+    maxAllowed: 100000000,
+  });
+  historyRangeError.value = rangeErr;
+  if (rangeErr) return;
+
+  await downloadCsv('historial-donaciones', {
+    q: historyQuery.value.trim() || undefined,
+    tipo: historyType.value || undefined,
+    categoria: historyCategory.value || undefined,
+    proyecto_destino_id: historyProject.value || undefined,
+    fecha_desde: historyFrom.value || undefined,
+    fecha_hasta: historyTo.value || undefined,
+    monto_min: historyMontoMin.value !== '' ? historyMontoMin.value : undefined,
+    monto_max: historyMontoMax.value !== '' ? historyMontoMax.value : undefined,
+    ordenar: historySort.value,
+  });
+}
+
 function resetHistoryFilters() {
   historyQuery.value = '';
   historyType.value = '';
+  historyCategory.value = '';
   historyProject.value = '';
   historyFrom.value = '';
   historyTo.value = '';
+  historyMontoMin.value = '';
+  historyMontoMax.value = '';
+  historySort.value = 'recientes';
+  historyRangeError.value = null;
   loadHistory(1);
 }
 
 async function loadNeeds() {
   if (!dbConfigured.value) return;
+  const rangeErr = validateNumericBoundsClient(needsMontoMin.value, needsMontoMax.value, {
+    label: 'monto objetivo (Bs.)',
+    maxAllowed: 100000000,
+  });
+  needsRangeError.value = rangeErr;
+  if (rangeErr) return;
+
   needsLoading.value = true;
   try {
-    needsList.value = await api.getDonationNeeds();
+    needsList.value = await api.getDonationNeeds({
+      q: needsQuery.value.trim() || undefined,
+      tipo: needsType.value || undefined,
+      monto_min: needsMontoMin.value !== '' ? needsMontoMin.value : undefined,
+      monto_max: needsMontoMax.value !== '' ? needsMontoMax.value : undefined,
+      ordenar: needsSort.value,
+    });
   } catch {
     // Silenciar si la tabla aún está en migración o sin datos
   } finally {
     needsLoading.value = false;
   }
+}
+
+async function handleExportNeeds() {
+  const rangeErr = validateNumericBoundsClient(needsMontoMin.value, needsMontoMax.value, {
+    label: 'monto objetivo (Bs.)',
+    maxAllowed: 100000000,
+  });
+  needsRangeError.value = rangeErr;
+  if (rangeErr) return;
+
+  await downloadCsv('necesidades-donacion', {
+    q: needsQuery.value.trim() || undefined,
+    tipo: needsType.value || undefined,
+    monto_min: needsMontoMin.value !== '' ? needsMontoMin.value : undefined,
+    monto_max: needsMontoMax.value !== '' ? needsMontoMax.value : undefined,
+    ordenar: needsSort.value,
+  });
 }
 
 function resetNeedForm() {
@@ -729,6 +869,7 @@ async function submitConfirmReceipt() {
 }
 
 onMounted(() => {
+  refreshAccess();
   loadInitialData();
 });
 </script>
@@ -874,6 +1015,19 @@ onMounted(() => {
       </button>
     </div>
 
+    <div
+      v-if="exportNotice"
+      role="status"
+      :class="[
+        'rounded-xl px-4 py-3 text-xs sm:text-sm border',
+        exportNotice.type === 'success'
+          ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+          : 'bg-rose-50 border-rose-200 text-rose-900',
+      ]"
+    >
+      {{ exportNotice.text }}
+    </div>
+
     <!-- ================================================================ -->
     <!-- TAB 1: TRAZABILIDAD Y ENTREGAS (KIR-32 & KIR-30) -->
     <!-- ================================================================ -->
@@ -934,52 +1088,131 @@ onMounted(() => {
       </div>
 
       <!-- Filters & Search Toolbar -->
-      <div class="bg-white border border-stone-200 rounded-2xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div class="relative flex-1 max-w-md">
-          <Search class="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            v-model="searchQuery"
-            type="text"
-            placeholder="Buscar por donante, código KIR-DON, receptor o proyecto..."
-            class="w-full pl-10 pr-4 py-2 text-sm bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#289EAB]/30 focus:border-[#289EAB]"
-          />
-        </div>
-
-        <div class="flex flex-wrap items-center gap-3">
-          <div class="inline-flex items-center gap-1 p-1 bg-stone-100 rounded-xl">
-            <button
-              v-for="opt in [
-                { id: 'todos', label: 'Todas' },
-                { id: 'economica', label: 'Económicas' },
-                { id: 'especie', label: 'En especie' },
-              ]"
-              :key="opt.id"
-              @click="tipoFilter = opt.id as any"
-              :class="[
-                'px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer',
-                tipoFilter === opt.id
-                  ? 'bg-white text-stone-900 shadow-xs'
-                  : 'text-stone-600 hover:text-stone-900',
-              ]"
-            >
-              {{ opt.label }}
-            </button>
+      <form @submit.prevent="applyDonationsFilter" class="bg-white border border-stone-200 rounded-2xl p-4 sm:p-5 space-y-3">
+        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div class="relative flex-1 max-w-md">
+            <Search class="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              v-model="searchQuery"
+              type="text"
+              placeholder="Buscar por donante, código KIR-DON, receptor o proyecto..."
+              class="w-full pl-10 pr-4 py-2 text-sm bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#289EAB]/30 focus:border-[#289EAB]"
+            />
           </div>
 
-          <select
-            v-model="estadoFilter"
-            aria-label="Filtrar por estado de entrega"
-            class="px-3.5 py-2 text-xs font-semibold bg-stone-50 border border-stone-200 rounded-xl text-stone-700 focus:outline-none focus:ring-2 focus:ring-[#289EAB]/30 focus:border-[#289EAB]"
-          >
-            <option value="todos">Todos los estados</option>
-            <option value="ofrecida">Ofrecida por donante</option>
-            <option value="recibida">Recibida en custodia</option>
-            <option value="en_preparacion">En preparación / ruta</option>
-            <option value="entrega_parcial">Entrega parcial</option>
-            <option value="entregada">Entregada y trazada</option>
-          </select>
+          <div class="flex flex-wrap items-center gap-2.5">
+            <div class="inline-flex items-center gap-1 p-1 bg-stone-100 rounded-xl">
+              <button
+                type="button"
+                v-for="opt in [
+                  { id: 'todos', label: 'Todas' },
+                  { id: 'economica', label: 'Económicas' },
+                  { id: 'especie', label: 'En especie' },
+                ]"
+                :key="opt.id"
+                @click="tipoFilter = opt.id as any; applyDonationsFilter()"
+                :class="[
+                  'px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer',
+                  tipoFilter === opt.id
+                    ? 'bg-white text-stone-900 shadow-xs'
+                    : 'text-stone-600 hover:text-stone-900',
+                ]"
+              >
+                {{ opt.label }}
+              </button>
+            </div>
+
+            <select
+              v-model="categoriaFilter"
+              @change="applyDonationsFilter"
+              aria-label="Filtrar por categoría en especie"
+              class="px-3 py-2 text-xs font-semibold bg-stone-50 border border-stone-200 rounded-xl text-stone-700 focus:outline-none focus:ring-2 focus:ring-[#289EAB]/30"
+            >
+              <option value="">Todas las categorías</option>
+              <option value="alimentos">Alimentos</option>
+              <option value="ropa_abrigo">Ropa y abrigo</option>
+              <option value="utiles_escolares">Útiles escolares</option>
+              <option value="salud_higiene">Salud e higiene</option>
+              <option value="herramientas">Herramientas</option>
+              <option value="otros">Otros</option>
+            </select>
+
+            <select
+              v-model="estadoFilter"
+              @change="applyDonationsFilter"
+              aria-label="Filtrar por estado de entrega"
+              class="px-3 py-2 text-xs font-semibold bg-stone-50 border border-stone-200 rounded-xl text-stone-700 focus:outline-none focus:ring-2 focus:ring-[#289EAB]/30"
+            >
+              <option value="todos">Todos los estados</option>
+              <option value="ofrecida">Ofrecida por donante</option>
+              <option value="recibida">Recibida en custodia</option>
+              <option value="en_preparacion">En preparación / ruta</option>
+              <option value="entrega_parcial">Entrega parcial</option>
+              <option value="entregada">Entregada y trazada</option>
+            </select>
+          </div>
         </div>
-      </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-stone-100 text-xs">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-medium text-stone-600">Monto (Bs.):</span>
+            <input
+              v-model="montoMin"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Mín."
+              aria-label="Monto mínimo en bolivianos"
+              class="w-24 px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs tabular-nums"
+            />
+            <span>–</span>
+            <input
+              v-model="montoMax"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Máx."
+              aria-label="Monto máximo en bolivianos"
+              class="w-24 px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs tabular-nums"
+            />
+
+            <select
+              v-model="donationsSort"
+              @change="applyDonationsFilter"
+              aria-label="Ordenar donaciones"
+              class="px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs text-stone-700"
+            >
+              <option value="recientes">Más recientes</option>
+              <option value="monto_desc">Mayor monto (Bs.)</option>
+              <option value="monto_asc">Menor monto (Bs.)</option>
+              <option value="donante_asc">Donante (A-Z)</option>
+            </select>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="submit"
+              class="px-3.5 py-1.5 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-xl whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Aplicar filtros
+            </button>
+            <button
+              v-if="canExport"
+              type="button"
+              @click="handleExportDonations"
+              :disabled="exporting"
+              class="px-3.5 py-1.5 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+            >
+              <Download class="w-3.5 h-3.5" />
+              <span>{{ exporting ? 'Exportando...' : 'Exportar CSV' }}</span>
+            </button>
+          </div>
+        </div>
+
+        <p v-if="donationsRangeError" role="alert" class="text-xs font-medium text-rose-700">
+          {{ donationsRangeError }}
+        </p>
+      </form>
 
       <!-- Loading Skeleton -->
       <div v-if="store.loading && !store.donations.length" class="space-y-4">
@@ -1269,83 +1502,143 @@ onMounted(() => {
       <!-- Filter Form -->
       <form
         @submit.prevent="loadHistory(1)"
-        class="bg-white rounded-2xl border border-stone-200 p-4 shadow-xs grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end"
+        class="bg-white rounded-2xl border border-stone-200 p-4 shadow-xs space-y-3"
       >
-        <label class="relative sm:col-span-2 lg:col-span-2">
-          <span class="block text-[11px] font-semibold text-stone-500 mb-1">Buscar aporte</span>
-          <Search class="w-4 h-4 text-stone-400 absolute left-3 bottom-3 pointer-events-none" />
-          <input
-            v-model="historyQuery"
-            maxlength="120"
-            placeholder="Donante, proyecto, código o receptor"
-            class="w-full pl-9 pr-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
-            aria-label="Buscar en el historial"
-          />
-        </label>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
+          <label class="relative sm:col-span-2 lg:col-span-2">
+            <span class="block text-[11px] font-semibold text-stone-500 mb-1">Buscar aporte</span>
+            <Search class="w-4 h-4 text-stone-400 absolute left-3 bottom-3 pointer-events-none" />
+            <input
+              v-model="historyQuery"
+              maxlength="120"
+              placeholder="Donante, proyecto, código o receptor"
+              class="w-full pl-9 pr-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
+              aria-label="Buscar en el historial"
+            />
+          </label>
 
-        <label>
-          <span class="block text-[11px] font-semibold text-stone-500 mb-1">Tipo</span>
-          <select
-            v-model="historyType"
-            class="w-full px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
-            aria-label="Filtrar por tipo de donación"
-          >
-            <option value="">Todos los tipos</option>
-            <option value="economica">Económica</option>
-            <option value="especie">En especie</option>
-          </select>
-        </label>
+          <label>
+            <span class="block text-[11px] font-semibold text-stone-500 mb-1">Tipo</span>
+            <select
+              v-model="historyType"
+              class="w-full px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
+              aria-label="Filtrar por tipo de donación"
+            >
+              <option value="">Todos los tipos</option>
+              <option value="economica">Económica</option>
+              <option value="especie">En especie</option>
+            </select>
+          </label>
 
-        <label>
-          <span class="block text-[11px] font-semibold text-stone-500 mb-1">Proyecto destino</span>
-          <select
-            v-model="historyProject"
-            class="w-full px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
-            aria-label="Filtrar por proyecto"
-          >
-            <option value="">Todos los destinos</option>
-            <option v-for="project in proyectos" :key="project.id" :value="String(project.id)">
-              {{ project.titulo }}
-            </option>
-          </select>
-        </label>
+          <label>
+            <span class="block text-[11px] font-semibold text-stone-500 mb-1">Proyecto destino</span>
+            <select
+              v-model="historyProject"
+              class="w-full px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
+              aria-label="Filtrar por proyecto"
+            >
+              <option value="">Todos los destinos</option>
+              <option v-for="project in proyectos" :key="project.id" :value="String(project.id)">
+                {{ project.titulo }}
+              </option>
+            </select>
+          </label>
 
-        <label class="text-[11px] font-semibold text-stone-500">
-          Desde
-          <input
-            v-model="historyFrom"
-            type="date"
-            class="mt-1 block w-full px-2.5 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-xs focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
-          />
-        </label>
+          <label class="text-[11px] font-semibold text-stone-500">
+            Desde
+            <input
+              v-model="historyFrom"
+              type="date"
+              class="mt-1 block w-full px-2.5 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-xs focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
+            />
+          </label>
 
-        <label class="text-[11px] font-semibold text-stone-500">
-          Hasta
-          <input
-            v-model="historyTo"
-            type="date"
-            class="mt-1 block w-full px-2.5 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-xs focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
-          />
-        </label>
-
-        <div class="sm:col-span-2 lg:col-span-6 flex flex-wrap justify-end gap-2 pt-1">
-          <button
-            type="button"
-            @click="resetHistoryFilters"
-            :disabled="historyLoading"
-            class="px-4 py-2 text-xs font-semibold text-stone-600 bg-stone-100 hover:bg-stone-200 rounded-xl cursor-pointer"
-          >
-            Limpiar filtros
-          </button>
-          <button
-            type="submit"
-            :disabled="historyLoading"
-            class="inline-flex items-center gap-2 px-5 py-2 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-xs sm:text-sm font-semibold rounded-xl disabled:opacity-50 cursor-pointer"
-          >
-            <Search class="w-4 h-4" />
-            <span>Aplicar filtros</span>
-          </button>
+          <label class="text-[11px] font-semibold text-stone-500">
+            Hasta
+            <input
+              v-model="historyTo"
+              type="date"
+              class="mt-1 block w-full px-2.5 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-xs focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
+            />
+          </label>
         </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-100 text-xs">
+          <div class="flex flex-wrap items-center gap-2">
+            <select
+              v-model="historyCategory"
+              class="px-3 py-1.5 rounded-xl border border-stone-200 bg-stone-50 text-xs text-stone-700"
+            >
+              <option value="">Todas las categorías</option>
+              <option value="alimentos">Alimentos</option>
+              <option value="ropa_abrigo">Ropa y abrigo</option>
+              <option value="utiles_escolares">Útiles escolares</option>
+              <option value="salud_higiene">Salud e higiene</option>
+              <option value="herramientas">Herramientas</option>
+              <option value="otros">Otros</option>
+            </select>
+
+            <input
+              v-model="historyMontoMin"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Monto Bs. mín."
+              class="w-28 px-2.5 py-1.5 rounded-xl border border-stone-200 bg-stone-50 text-xs tabular-nums"
+            />
+            <input
+              v-model="historyMontoMax"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Monto Bs. máx."
+              class="w-28 px-2.5 py-1.5 rounded-xl border border-stone-200 bg-stone-50 text-xs tabular-nums"
+            />
+
+            <select
+              v-model="historySort"
+              class="px-3 py-1.5 rounded-xl border border-stone-200 bg-stone-50 text-xs text-stone-700"
+            >
+              <option value="recientes">Más recientes</option>
+              <option value="monto_desc">Mayor monto (Bs.)</option>
+              <option value="monto_asc">Menor monto (Bs.)</option>
+              <option value="donante_asc">Donante (A-Z)</option>
+            </select>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              @click="resetHistoryFilters"
+              :disabled="historyLoading"
+              class="px-4 py-2 text-xs font-semibold text-stone-600 bg-stone-100 hover:bg-stone-200 rounded-xl cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Limpiar filtros
+            </button>
+            <button
+              type="submit"
+              :disabled="historyLoading"
+              class="inline-flex items-center gap-2 px-5 py-2 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-xs sm:text-sm font-semibold rounded-xl disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Search class="w-4 h-4" />
+              <span>Aplicar filtros</span>
+            </button>
+            <button
+              v-if="canExport"
+              type="button"
+              @click="handleExportHistory"
+              :disabled="exporting"
+              class="inline-flex items-center gap-1.5 px-4 py-2 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-xl cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60"
+            >
+              <Download class="w-3.5 h-3.5" />
+              <span>{{ exporting ? 'Exportando...' : 'Exportar CSV' }}</span>
+            </button>
+          </div>
+        </div>
+
+        <p v-if="historyRangeError" role="alert" class="text-xs font-medium text-rose-700">
+          {{ historyRangeError }}
+        </p>
       </form>
 
       <div
@@ -1720,16 +2013,86 @@ onMounted(() => {
                 <h3 class="font-bold text-stone-900">Necesidades registradas</h3>
                 <p class="text-xs text-stone-500">Solicitudes de receptores pendientes o en seguimiento.</p>
               </div>
-              <button
-                type="button"
-                @click="loadNeeds"
-                :disabled="needsLoading"
-                class="p-2 rounded-xl border border-stone-200 text-stone-600 hover:bg-stone-50 cursor-pointer"
-                aria-label="Actualizar necesidades"
-              >
-                <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': needsLoading }" />
-              </button>
+              <div class="flex items-center gap-2">
+                <button
+                  v-if="canExport"
+                  type="button"
+                  @click="handleExportNeeds"
+                  :disabled="exporting"
+                  class="px-3 py-1.5 rounded-xl bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+                >
+                  <Download class="w-3.5 h-3.5" />
+                  <span>Exportar CSV</span>
+                </button>
+                <button
+                  type="button"
+                  @click="loadNeeds"
+                  :disabled="needsLoading"
+                  class="p-2 rounded-xl border border-stone-200 text-stone-600 hover:bg-stone-50 cursor-pointer"
+                  aria-label="Actualizar necesidades"
+                >
+                  <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': needsLoading }" />
+                </button>
+              </div>
             </div>
+
+            <!-- Filters for needs list -->
+            <form @submit.prevent="loadNeeds" class="space-y-2 pt-2 border-t border-stone-100 text-xs">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input
+                  v-model="needsQuery"
+                  type="text"
+                  placeholder="Buscar necesidad o receptor..."
+                  class="px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs"
+                />
+                <select
+                  v-model="needsType"
+                  @change="loadNeeds"
+                  class="px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs"
+                >
+                  <option value="">Todos los tipos</option>
+                  <option value="especie">En especie</option>
+                  <option value="economica">Económica</option>
+                </select>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <input
+                  v-model="needsMontoMin"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="Meta Bs. mín."
+                  class="w-24 px-2.5 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs tabular-nums"
+                />
+                <input
+                  v-model="needsMontoMax"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="Meta Bs. máx."
+                  class="w-24 px-2.5 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs tabular-nums"
+                />
+                <select
+                  v-model="needsSort"
+                  @change="loadNeeds"
+                  class="flex-1 px-2.5 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs"
+                >
+                  <option value="recientes">Más recientes</option>
+                  <option value="monto_desc">Mayor meta (Bs.)</option>
+                  <option value="monto_asc">Menor meta (Bs.)</option>
+                  <option value="titulo_asc">Título (A-Z)</option>
+                </select>
+                <button
+                  type="submit"
+                  class="px-3 py-1.5 bg-stone-900 hover:bg-stone-800 text-white rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Filtrar
+                </button>
+              </div>
+              <p v-if="needsRangeError" role="alert" class="text-xs font-medium text-rose-700">
+                {{ needsRangeError }}
+              </p>
+            </form>
 
             <div v-if="needsLoading && !needsList.length" class="py-8 text-center text-xs text-stone-500">
               Cargando solicitudes registradas...

@@ -24,7 +24,15 @@ export const useDonationsStore = defineStore('donations', () => {
   const submitting = ref(false);
   const error = ref<string | null>(null);
 
-  async function fetchDonations(params?: { q?: string; tipo?: string; estado_entrega?: string }) {
+  async function fetchDonations(params?: {
+    q?: string;
+    tipo?: string;
+    categoria?: string;
+    estado_entrega?: string;
+    monto_min?: number | string;
+    monto_max?: number | string;
+    ordenar?: string;
+  }) {
     loading.value = true;
     error.value = null;
     try {

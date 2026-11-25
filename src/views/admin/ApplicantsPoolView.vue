@@ -28,7 +28,11 @@ import {
   ChevronRight,
   ShieldCheck,
   UserCheck,
+  Download,
 } from 'lucide-vue-next';
+import { useAuthAccess, validateNumericBoundsClient } from '../../composables/useAuthAccess';
+
+const { canExport, exporting, exportNotice, refreshAccess, downloadCsv } = useAuthAccess();
 
 // State
 const applicants = ref<PostulanteBancoItem[]>([]);
@@ -43,6 +47,9 @@ const searchQuery = ref('');
 const selectedProfession = ref('todas');
 const selectedStatus = ref('todos');
 const selectedProject = ref('todos');
+const avanceMin = ref('');
+const avanceMax = ref('');
+const rangeError = ref<string | null>(null);
 const selectedSort = ref<'recientes' | 'nombre_asc' | 'avance_desc' | 'avance_asc'>('recientes');
 const viewMode = ref<'grid' | 'table'>('grid');
 
@@ -80,15 +87,24 @@ const etapaLabels: Record<string, { label: string; desc: string }> = {
 };
 
 async function loadData() {
+  const boundsError = validateNumericBoundsClient(avanceMin.value, avanceMax.value, {
+    label: 'avance (%)',
+    maxAllowed: 100,
+  });
+  rangeError.value = boundsError;
+  if (boundsError) return;
+
   loading.value = true;
   error.value = null;
   try {
     const [appsData, metricsData, projsData] = await Promise.all([
       api.getApplicantsPool({
-        q: searchQuery.value || undefined,
+        q: searchQuery.value.trim() || undefined,
         profesion: selectedProfession.value !== 'todas' ? selectedProfession.value : undefined,
         estado: selectedStatus.value !== 'todos' ? selectedStatus.value : undefined,
         proyecto_id: selectedProject.value !== 'todos' ? selectedProject.value : undefined,
+        avance_min: avanceMin.value !== '' ? avanceMin.value : undefined,
+        avance_max: avanceMax.value !== '' ? avanceMax.value : undefined,
         ordenar: selectedSort.value,
       }),
       api.getPostulantesMetricas().catch(() => null),
@@ -105,7 +121,27 @@ async function loadData() {
   }
 }
 
+async function handleExportApplicants() {
+  const boundsError = validateNumericBoundsClient(avanceMin.value, avanceMax.value, {
+    label: 'avance (%)',
+    maxAllowed: 100,
+  });
+  rangeError.value = boundsError;
+  if (boundsError) return;
+
+  await downloadCsv('postulantes', {
+    q: searchQuery.value.trim() || undefined,
+    profesion: selectedProfession.value !== 'todas' ? selectedProfession.value : undefined,
+    estado: selectedStatus.value !== 'todos' ? selectedStatus.value : undefined,
+    proyecto_id: selectedProject.value !== 'todos' ? selectedProject.value : undefined,
+    avance_min: avanceMin.value !== '' ? avanceMin.value : undefined,
+    avance_max: avanceMax.value !== '' ? avanceMax.value : undefined,
+    ordenar: selectedSort.value,
+  });
+}
+
 onMounted(() => {
+  refreshAccess();
   loadData();
 });
 
@@ -250,6 +286,9 @@ function resetFilters() {
   selectedProfession.value = 'todas';
   selectedStatus.value = 'todos';
   selectedProject.value = 'todos';
+  avanceMin.value = '';
+  avanceMax.value = '';
+  rangeError.value = null;
   selectedSort.value = 'recientes';
   loadData();
 }
@@ -274,19 +313,30 @@ function resetFilters() {
           </p>
         </div>
 
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-3">
           <router-link
             to="/admin"
-            class="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-stone-700 bg-white border border-stone-300 rounded-xl hover:bg-stone-100 transition-colors shadow-xs"
+            class="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-stone-700 bg-white border border-stone-300 rounded-xl hover:bg-stone-100 transition-colors shadow-xs whitespace-nowrap shrink-0"
           >
             <ArrowLeft class="w-4 h-4" />
             Panel General
           </router-link>
 
           <button
+            v-if="canExport"
+            type="button"
+            @click="handleExportApplicants"
+            :disabled="exporting"
+            class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-[#289EAB] hover:bg-[#1E7B85] rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <Download class="w-4 h-4" />
+            <span>{{ exporting ? 'Exportando...' : 'Exportar CSV' }}</span>
+          </button>
+
+          <button
             @click="loadData"
             :disabled="loading"
-            class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-[#0D9488] hover:bg-[#0F766E] rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer"
+            class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-[#0D9488] hover:bg-[#0F766E] rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
           >
             <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" />
             <span>Actualizar</span>
@@ -365,7 +415,20 @@ function resetFilters() {
         </div>
       </div>
 
-      <!-- Feedback Banner (Copied Notice) -->
+      <!-- Feedback Banner (Copied & Export Notices) -->
+      <div
+        v-if="exportNotice"
+        role="status"
+        :class="[
+          'px-4 py-3 rounded-xl text-sm font-medium border shadow-xs',
+          exportNotice.type === 'success'
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : 'bg-rose-50 border-rose-200 text-rose-800',
+        ]"
+      >
+        {{ exportNotice.text }}
+      </div>
+
       <div
         v-if="copiedNotice"
         class="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-2.5 rounded-xl text-sm font-medium flex items-center gap-2 shadow-xs transition-all animate-fade-in"
@@ -463,6 +526,45 @@ function resetFilters() {
               </button>
             </div>
           </div>
+        </div>
+
+        <!-- Numeric Avance Range Filter -->
+        <div class="flex flex-wrap items-center justify-between gap-2.5 pt-2 border-t border-stone-100 text-xs">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-stone-500 font-semibold">Rango de avance (%):</span>
+            <input
+              v-model="avanceMin"
+              type="number"
+              min="0"
+              max="100"
+              placeholder="Avance mín. (%)"
+              class="w-36 px-3 py-1.5 rounded-lg border border-stone-300 bg-stone-50 text-xs text-stone-700 tabular-nums focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0D9488]"
+            />
+            <input
+              v-model="avanceMax"
+              type="number"
+              min="0"
+              max="100"
+              placeholder="Avance máx. (%)"
+              class="w-36 px-3 py-1.5 rounded-lg border border-stone-300 bg-stone-50 text-xs text-stone-700 tabular-nums focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0D9488]"
+            />
+            <button
+              type="button"
+              @click="loadData"
+              class="px-3 py-1.5 rounded-lg bg-[#0D9488] hover:bg-[#0F766E] text-white font-semibold cursor-pointer whitespace-nowrap"
+            >
+              Aplicar rango
+            </button>
+            <button
+              v-if="avanceMin || avanceMax || searchQuery || selectedProfession !== 'todas' || selectedStatus !== 'todos' || selectedProject !== 'todos'"
+              type="button"
+              @click="resetFilters"
+              class="px-2.5 py-1.5 rounded-lg text-stone-600 hover:bg-stone-100 font-medium cursor-pointer"
+            >
+              Limpiar
+            </button>
+          </div>
+          <p v-if="rangeError" role="alert" class="text-rose-700 font-semibold">{{ rangeError }}</p>
         </div>
 
         <!-- Filter by Profession Chips -->

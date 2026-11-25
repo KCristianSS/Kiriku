@@ -7,7 +7,10 @@ import type {
   Proyecto,
   RegistrarEvaluacionPersonalPayload,
 } from '../../types';
-import { ArrowLeft, CheckCircle2, Clock3, MessageCircle, RefreshCw, Search, ShieldAlert, UserRound, X } from 'lucide-vue-next';
+import { ArrowLeft, CheckCircle2, Clock3, Download, MessageCircle, RefreshCw, Search, ShieldAlert, UserRound, X } from 'lucide-vue-next';
+import { useAuthAccess, validateNumericBoundsClient } from '../../composables/useAuthAccess';
+
+const { canExport, exporting, exportNotice, refreshAccess, downloadCsv } = useAuthAccess();
 
 const CRITERIA: Array<{ key: keyof EvaluacionPersonalCriterios; label: string; description: string }> = [
   { key: 'motivacion_servicio', label: 'Motivación y vocación de servicio', description: 'Explica su interés por el voluntariado y su afinidad con la misión del proyecto.' },
@@ -25,6 +28,11 @@ const success = ref('');
 const query = ref('');
 const selectedProject = ref('todos');
 const selectedFilter = ref('pendientes');
+const selectedCategory = ref('');
+const puntajeMin = ref('');
+const puntajeMax = ref('');
+const sortOrder = ref<'recientes' | 'nombre_asc' | 'puntaje_desc' | 'puntaje_asc'>('recientes');
+const rangeError = ref<string | null>(null);
 const selectedItem = ref<EvaluacionPersonalItem | null>(null);
 const decision = ref<RegistrarEvaluacionPersonalPayload['estado']>('aprobado');
 const evaluator = ref('Comité de Entrevista Personal');
@@ -63,6 +71,13 @@ const scoreAverage = computed(() => {
 });
 
 async function loadData() {
+  const boundsErr = validateNumericBoundsClient(puntajeMin.value, puntajeMax.value, {
+    label: 'puntaje / promedio',
+    maxAllowed: 100,
+  });
+  rangeError.value = boundsErr;
+  if (boundsErr) return;
+
   loading.value = true;
   error.value = '';
   try {
@@ -70,6 +85,10 @@ async function loadData() {
       api.getPersonalEvaluations({
         estado: selectedFilter.value,
         proyecto_id: selectedProject.value === 'todos' ? undefined : selectedProject.value,
+        categoria: selectedCategory.value || undefined,
+        puntaje_min: puntajeMin.value !== '' ? puntajeMin.value : undefined,
+        puntaje_max: puntajeMax.value !== '' ? puntajeMax.value : undefined,
+        ordenar: sortOrder.value,
         q: query.value.trim() || undefined,
       }),
       api.getProyectos({ estado: 'aprobado' }).catch(() => []),
@@ -83,7 +102,29 @@ async function loadData() {
   }
 }
 
-onMounted(loadData);
+async function handleExportPersonal() {
+  const boundsErr = validateNumericBoundsClient(puntajeMin.value, puntajeMax.value, {
+    label: 'puntaje / promedio',
+    maxAllowed: 100,
+  });
+  rangeError.value = boundsErr;
+  if (boundsErr) return;
+
+  await downloadCsv('evaluacion-personal', {
+    estado: selectedFilter.value,
+    proyecto_id: selectedProject.value === 'todos' ? undefined : selectedProject.value,
+    categoria: selectedCategory.value || undefined,
+    puntaje_min: puntajeMin.value !== '' ? puntajeMin.value : undefined,
+    puntaje_max: puntajeMax.value !== '' ? puntajeMax.value : undefined,
+    ordenar: sortOrder.value,
+    q: query.value.trim() || undefined,
+  });
+}
+
+onMounted(() => {
+  refreshAccess();
+  loadData();
+});
 
 function openEvaluation(item: EvaluacionPersonalItem) {
   if (!item.puede_evaluar) return;
@@ -153,19 +194,45 @@ function statusClass(status: string) {
           <h1 class="text-3xl font-extrabold text-stone-900 tracking-tight">Evaluación Personal</h1>
           <p class="text-stone-600 text-sm mt-1">Registra la entrevista y valora motivación, compromiso y disponibilidad.</p>
         </div>
-        <div class="flex gap-3">
-          <router-link to="/admin" class="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-stone-700 bg-white border border-stone-300 rounded-xl hover:bg-stone-100"><ArrowLeft class="w-4 h-4" /> Panel General</router-link>
-          <button @click="loadData" :disabled="loading" class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-sky-700 hover:bg-sky-800 rounded-xl disabled:opacity-50"><RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" /> Actualizar</button>
+        <div class="flex flex-wrap gap-3">
+          <router-link to="/admin" class="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-stone-700 bg-white border border-stone-300 rounded-xl hover:bg-stone-100 whitespace-nowrap shrink-0"><ArrowLeft class="w-4 h-4" /> Panel General</router-link>
+          <button v-if="canExport" type="button" @click="handleExportPersonal" :disabled="exporting" class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-[#289EAB] hover:bg-[#1E7B85] rounded-xl disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"><Download class="w-4 h-4" /> {{ exporting ? 'Exportando...' : 'Exportar CSV' }}</button>
+          <button @click="loadData" :disabled="loading" class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-sky-700 hover:bg-sky-800 rounded-xl disabled:opacity-50 whitespace-nowrap shrink-0"><RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" /> Actualizar</button>
         </div>
       </header>
 
+      <div v-if="exportNotice" role="status" :class="['p-4 rounded-xl border text-sm font-medium', exportNotice.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800']">{{ exportNotice.text }}</div>
       <div v-if="success" role="status" class="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm flex items-center gap-2"><CheckCircle2 class="w-5 h-5" /> {{ success }}</div>
       <div v-if="error" role="alert" class="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-sm">{{ error }}</div>
 
-      <section class="bg-white rounded-2xl border border-stone-200 p-4 shadow-xs grid grid-cols-1 md:grid-cols-3 gap-3">
-        <label class="relative"><Search class="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" /><input v-model="query" @input="loadData" placeholder="Buscar persona o proyecto" class="w-full pl-9 pr-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" /></label>
-        <select v-model="selectedProject" @change="loadData" class="px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm"><option value="todos">Todos los proyectos</option><option v-for="project in projects" :key="project.id" :value="String(project.id)">{{ project.titulo }}</option></select>
-        <select v-model="selectedFilter" @change="loadData" class="px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm"><option v-for="filter in filters" :key="filter.value" :value="filter.value">{{ filter.label }}</option></select>
+      <section class="bg-white rounded-2xl border border-stone-200 p-4 shadow-xs space-y-3">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label class="relative"><Search class="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" /><input v-model="query" @input="loadData" placeholder="Buscar persona o proyecto" class="w-full pl-9 pr-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" /></label>
+          <select v-model="selectedProject" @change="loadData" class="px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm"><option value="todos">Todos los proyectos</option><option v-for="project in projects" :key="project.id" :value="String(project.id)">{{ project.titulo }}</option></select>
+          <select v-model="selectedFilter" @change="loadData" class="px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm"><option v-for="filter in filters" :key="filter.value" :value="filter.value">{{ filter.label }}</option></select>
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-100 text-xs">
+          <div class="flex flex-wrap items-center gap-2">
+            <select v-model="selectedCategory" @change="loadData" class="px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs text-stone-700 font-medium">
+              <option value="">Todas las categorías</option>
+              <option value="ONG">ONG</option>
+              <option value="Fundación">Fundación</option>
+              <option value="Empresa">Empresa</option>
+              <option value="Institución Educativa">Institución Educativa</option>
+              <option value="Colectivo Social">Colectivo Social</option>
+            </select>
+            <input v-model="puntajeMin" type="number" min="0" max="100" placeholder="Puntaje mín." class="w-32 px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs tabular-nums" />
+            <input v-model="puntajeMax" type="number" min="0" max="100" placeholder="Puntaje máx." class="w-32 px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs tabular-nums" />
+            <button type="button" @click="loadData" class="px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-800 text-white font-semibold cursor-pointer">Filtrar</button>
+          </div>
+          <select v-model="sortOrder" @change="loadData" class="px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs text-stone-700 font-medium">
+            <option value="recientes">Ordenar: Más recientes</option>
+            <option value="nombre_asc">Nombre (A - Z)</option>
+            <option value="puntaje_desc">Mayor puntaje</option>
+            <option value="puntaje_asc">Menor puntaje</option>
+          </select>
+        </div>
+        <p v-if="rangeError" role="alert" class="text-xs font-semibold text-rose-700">{{ rangeError }}</p>
       </section>
       <nav class="flex flex-wrap gap-2" aria-label="Filtrar entrevistas">
         <button v-for="filter in filters" :key="filter.value" @click="selectedFilter = filter.value; loadData()" :class="['px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors', selectedFilter === filter.value ? 'bg-sky-700 text-white border-sky-700' : 'bg-white text-stone-600 border-stone-200 hover:border-sky-300']">{{ filter.label }}</button>

@@ -16,6 +16,7 @@ import CompetencyEvaluationView from '../views/admin/CompetencyEvaluationView.vu
 import PersonalEvaluationView from '../views/admin/PersonalEvaluationView.vue';
 import HealthEvaluationView from '../views/admin/HealthEvaluationView.vue';
 import PublishedProjectsView from '../views/admin/PublishedProjectsView.vue';
+import AuditLogsView from '../views/admin/AuditLogsView.vue';
 import LoginView from '../views/LoginView.vue';
 import { supabaseAuth } from '../auth';
 
@@ -127,6 +128,12 @@ const routes: RouteRecordRaw[] = [
     path: '/admin/publicacion',
     name: 'admin-publish',
     component: PublishedProjectsView,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/admin/logs',
+    name: 'admin-logs',
+    component: AuditLogsView,
     meta: { requiresAuth: true },
   },
 

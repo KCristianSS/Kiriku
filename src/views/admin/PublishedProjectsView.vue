@@ -19,7 +19,11 @@ import {
   AlertTriangle,
   Sparkles,
   Send,
+  Download,
 } from 'lucide-vue-next';
+import { useAuthAccess, validateNumericBoundsClient } from '../../composables/useAuthAccess';
+
+const { canExport, exporting, exportNotice, refreshAccess, downloadCsv } = useAuthAccess();
 
 const projects = ref<Proyecto[]>([]);
 const loading = ref(false);
@@ -29,6 +33,11 @@ const successNotice = ref<string | null>(null);
 // Filters
 const selectedTab = ref<'sin_publicar' | 'publicados' | 'todos'>('sin_publicar');
 const searchQuery = ref('');
+const selectedCategory = ref('');
+const cuposMin = ref('');
+const cuposMax = ref('');
+const sortOrder = ref<'recientes' | 'titulo_asc' | 'titulo_desc' | 'cupos_desc' | 'cupos_asc'>('recientes');
+const rangeError = ref<string | null>(null);
 
 // Confirmation modal state
 const targetProject = ref<Proyecto | null>(null);
@@ -36,10 +45,24 @@ const targetPublishState = ref<boolean>(true);
 const isUpdating = ref(false);
 
 async function loadProjects() {
+  const err = validateNumericBoundsClient(cuposMin.value, cuposMax.value, {
+    label: 'cupos',
+    integerOnly: true,
+    maxAllowed: 100000,
+  });
+  rangeError.value = err;
+  if (err) return;
+
   loading.value = true;
   error.value = null;
   try {
-    projects.value = await api.getProyectos();
+    projects.value = await api.getProyectos({
+      categoria: selectedCategory.value || undefined,
+      cupos_min: cuposMin.value !== '' ? cuposMin.value : undefined,
+      cupos_max: cuposMax.value !== '' ? cuposMax.value : undefined,
+      ordenar: sortOrder.value,
+      q: searchQuery.value.trim() || undefined,
+    });
   } catch (err: any) {
     error.value = err?.response?.data?.error || 'No se pudieron cargar los proyectos.';
   } finally {
@@ -47,7 +70,28 @@ async function loadProjects() {
   }
 }
 
+async function handleExportPublished() {
+  const err = validateNumericBoundsClient(cuposMin.value, cuposMax.value, {
+    label: 'cupos',
+    integerOnly: true,
+    maxAllowed: 100000,
+  });
+  rangeError.value = err;
+  if (err) return;
+
+  await downloadCsv('proyectos', {
+    estado: selectedTab.value !== 'todos' ? 'aprobado' : undefined,
+    publicado: selectedTab.value === 'publicados' ? 'true' : selectedTab.value === 'sin_publicar' ? 'false' : undefined,
+    categoria: selectedCategory.value || undefined,
+    cupos_min: cuposMin.value !== '' ? cuposMin.value : undefined,
+    cupos_max: cuposMax.value !== '' ? cuposMax.value : undefined,
+    ordenar: sortOrder.value,
+    q: searchQuery.value.trim() || undefined,
+  });
+}
+
 onMounted(() => {
+  refreshAccess();
   loadProjects();
 });
 
@@ -69,15 +113,6 @@ const filteredProjects = computed(() => {
     } else if (selectedTab.value === 'publicados') {
       if (p.estado !== 'aprobado' || !p.publicado) return false;
     }
-
-    if (searchQuery.value.trim()) {
-      const q = searchQuery.value.toLowerCase();
-      const matchTitle = p.titulo?.toLowerCase().includes(q);
-      const matchLoc = p.ubicacion?.toLowerCase().includes(q);
-      const matchOrg = (p.organizacion_nombre || p.organizacion?.nombre || '').toLowerCase().includes(q);
-      return matchTitle || matchLoc || matchOrg;
-    }
-
     return true;
   });
 });
@@ -142,6 +177,17 @@ function formatDate(dateStr?: string | null) {
       </router-link>
 
       <div class="flex items-center gap-2">
+        <button
+          v-if="canExport"
+          type="button"
+          @click="handleExportPublished"
+          :disabled="exporting"
+          class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#289EAB] hover:bg-[#1E7B85] text-white text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60"
+        >
+          <Download class="w-3.5 h-3.5" />
+          <span>{{ exporting ? 'Exportando...' : 'Exportar CSV' }}</span>
+        </button>
+
         <router-link
           to="/"
           class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#E8F6F8] text-[#1E7B85] border border-[#289EAB]/30 text-xs font-semibold hover:bg-[#d7eff3] transition-colors"
@@ -240,56 +286,124 @@ function formatDate(dateStr?: string | null) {
       <span>{{ error }}</span>
     </div>
 
-    <!-- Search & Tabs Toolbar -->
-    <div class="bg-white rounded-2xl border border-stone-200 p-4 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
-      <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-        <button
-          @click="selectedTab = 'sin_publicar'"
-          :class="[
-            'px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer',
-            selectedTab === 'sin_publicar'
-              ? 'bg-amber-500 text-white shadow-2xs'
-              : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
-          ]"
-        >
-          Listos para Publicar ({{ approvedReadyToPublish.length }})
-        </button>
-
-        <button
-          @click="selectedTab = 'publicados'"
-          :class="[
-            'px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer',
-            selectedTab === 'publicados'
-              ? 'bg-emerald-600 text-white shadow-2xs'
-              : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
-          ]"
-        >
-          Publicados ({{ approvedPublished.length }})
-        </button>
-
-        <button
-          @click="selectedTab = 'todos'"
-          :class="[
-            'px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer',
-            selectedTab === 'todos'
-              ? 'bg-stone-900 text-white shadow-2xs'
-              : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
-          ]"
-        >
-          Todos ({{ projects.length }})
-        </button>
-      </div>
-
-      <div class="relative w-full sm:w-72">
-        <Search class="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
-        <input
-          v-model="searchQuery"
-          type="text"
-          placeholder="Buscar proyecto u organización..."
-          class="w-full pl-9 pr-3 py-2 bg-stone-50 border border-stone-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-[#289EAB] focus:bg-white"
-        />
-      </div>
+    <div
+      v-if="exportNotice"
+      role="status"
+      :class="['p-3.5 rounded-2xl border text-xs sm:text-sm', exportNotice.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800']"
+    >
+      {{ exportNotice.text }}
     </div>
+
+    <!-- Search & Tabs Toolbar -->
+    <form @submit.prevent="loadProjects" class="bg-white rounded-2xl border border-stone-200 p-4 shadow-xs space-y-3">
+      <div class="flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <button
+            type="button"
+            @click="selectedTab = 'sin_publicar'"
+            :class="[
+              'px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer',
+              selectedTab === 'sin_publicar'
+                ? 'bg-amber-500 text-white shadow-2xs'
+                : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
+            ]"
+          >
+            Listos para Publicar ({{ approvedReadyToPublish.length }})
+          </button>
+
+          <button
+            type="button"
+            @click="selectedTab = 'publicados'"
+            :class="[
+              'px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer',
+              selectedTab === 'publicados'
+                ? 'bg-emerald-600 text-white shadow-2xs'
+                : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
+            ]"
+          >
+            Publicados ({{ approvedPublished.length }})
+          </button>
+
+          <button
+            type="button"
+            @click="selectedTab = 'todos'"
+            :class="[
+              'px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer',
+              selectedTab === 'todos'
+                ? 'bg-stone-900 text-white shadow-2xs'
+                : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
+            ]"
+          >
+            Todos ({{ projects.length }})
+          </button>
+        </div>
+
+        <div class="relative w-full sm:w-72">
+          <Search class="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            v-model="searchQuery"
+            type="text"
+            placeholder="Buscar proyecto u organización..."
+            class="w-full pl-9 pr-3 py-2 bg-stone-50 border border-stone-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-[#289EAB] focus:bg-white"
+          />
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-100 text-xs">
+        <div class="flex flex-wrap items-center gap-2">
+          <select
+            v-model="selectedCategory"
+            @change="loadProjects"
+            class="px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs text-stone-700"
+          >
+            <option value="">Todas las categorías</option>
+            <option value="ONG">ONG</option>
+            <option value="Fundación">Fundación</option>
+            <option value="Empresa">Empresa</option>
+            <option value="Institución Educativa">Institución Educativa</option>
+            <option value="Colectivo Social">Colectivo Social</option>
+          </select>
+
+          <input
+            v-model="cuposMin"
+            type="number"
+            min="0"
+            step="1"
+            placeholder="Cupos mín."
+            class="w-24 px-2.5 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs tabular-nums"
+          />
+          <input
+            v-model="cuposMax"
+            type="number"
+            min="0"
+            step="1"
+            placeholder="Cupos máx."
+            class="w-24 px-2.5 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs tabular-nums"
+          />
+
+          <select
+            v-model="sortOrder"
+            @change="loadProjects"
+            class="px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs text-stone-700"
+          >
+            <option value="recientes">Más recientes</option>
+            <option value="titulo_asc">Título (A-Z)</option>
+            <option value="titulo_desc">Título (Z-A)</option>
+            <option value="cupos_desc">Mayor cupos</option>
+            <option value="cupos_asc">Menor cupos</option>
+          </select>
+        </div>
+
+        <button
+          type="submit"
+          class="px-4 py-1.5 rounded-xl bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+        >
+          Aplicar filtros
+        </button>
+      </div>
+
+      <p v-if="rangeError" role="alert" class="text-xs font-medium text-rose-700">{{ rangeError }}</p>
+    </form>
 
     <!-- Loading -->
     <div v-if="loading" class="py-16 text-center bg-white rounded-3xl border border-stone-200">

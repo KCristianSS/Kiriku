@@ -13,6 +13,10 @@ export const useProjectsStore = defineStore('projects', () => {
   // Filters
   const selectedLocation = ref('');
   const selectedOrgId = ref('');
+  const selectedCategory = ref('');
+  const cuposMin = ref('');
+  const cuposMax = ref('');
+  const sortOrder = ref<'recientes' | 'titulo_asc' | 'titulo_desc' | 'cupos_desc' | 'cupos_asc'>('recientes');
   const searchQuery = ref('');
 
   async function fetchProjects(estado: string = 'aprobado') {
@@ -23,6 +27,10 @@ export const useProjectsStore = defineStore('projects', () => {
         estado,
         ubicacion: selectedLocation.value || undefined,
         organizacion_id: selectedOrgId.value || undefined,
+        categoria: selectedCategory.value || undefined,
+        cupos_min: cuposMin.value !== '' ? cuposMin.value : undefined,
+        cupos_max: cuposMax.value !== '' ? cuposMax.value : undefined,
+        ordenar: sortOrder.value || undefined,
         q: searchQuery.value || undefined,
       });
     } catch (err: any) {
@@ -40,6 +48,10 @@ export const useProjectsStore = defineStore('projects', () => {
       projects.value = await api.getPublishedProjects({
         ubicacion: selectedLocation.value || undefined,
         organizacion_id: selectedOrgId.value || undefined,
+        categoria: selectedCategory.value || undefined,
+        cupos_min: cuposMin.value !== '' ? cuposMin.value : undefined,
+        cupos_max: cuposMax.value !== '' ? cuposMax.value : undefined,
+        ordenar: sortOrder.value || undefined,
         q: searchQuery.value || undefined,
       });
     } catch (err: any) {
@@ -49,11 +61,18 @@ export const useProjectsStore = defineStore('projects', () => {
     }
   }
 
-  async function fetchAllProjectsForAdmin() {
+  async function fetchAllProjectsForAdmin(params?: {
+    estado?: string;
+    categoria?: string;
+    cupos_min?: number | string;
+    cupos_max?: number | string;
+    ordenar?: string;
+    q?: string;
+  }) {
     loading.value = true;
     error.value = null;
     try {
-      projects.value = await api.getProyectos();
+      projects.value = await api.getProyectos(params);
     } catch (err: any) {
       error.value = err?.response?.data?.error || 'Error al cargar proyectos para revisión';
     } finally {
@@ -130,6 +149,10 @@ export const useProjectsStore = defineStore('projects', () => {
     error,
     selectedLocation,
     selectedOrgId,
+    selectedCategory,
+    cuposMin,
+    cuposMax,
+    sortOrder,
     searchQuery,
     fetchProjects,
     fetchPublishedProjects,

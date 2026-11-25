@@ -21,7 +21,11 @@ import {
   CheckSquare,
   Activity,
   Eye,
+  Download,
 } from 'lucide-vue-next';
+import { useAuthAccess, validateNumericBoundsClient } from '../../composables/useAuthAccess';
+
+const { canExport, exporting, exportNotice, refreshAccess, downloadCsv } = useAuthAccess();
 
 // Access control state (KIR-56)
 const authLoading = ref(true);
@@ -68,6 +72,11 @@ const metrics = ref({
 // Filters
 const selectedFilter = ref<'pendientes' | 'aprobado' | 'observado' | 'rechazado' | 'bloqueadas' | 'todos'>('pendientes');
 const selectedProject = ref('todos');
+const selectedCategory = ref('');
+const puntajeMin = ref('');
+const puntajeMax = ref('');
+const sortOrder = ref<'recientes' | 'nombre_asc' | 'puntaje_desc' | 'puntaje_asc'>('recientes');
+const rangeError = ref<string | null>(null);
 const searchQuery = ref('');
 let latestRequestId = 0;
 
@@ -97,6 +106,7 @@ const quickPresets = [
 async function verifyAccessAndLoad() {
   authLoading.value = true;
   accessDeniedMessage.value = null;
+  await refreshAccess();
   try {
     const me = await api.getMe();
     currentUser.value = {
@@ -134,6 +144,13 @@ async function verifyAccessAndLoad() {
 
 async function loadData() {
   if (!canReadHealth.value) return;
+  const boundsErr = validateNumericBoundsClient(puntajeMin.value, puntajeMax.value, {
+    label: 'índice de bienestar',
+    maxAllowed: 100,
+  });
+  rangeError.value = boundsErr;
+  if (boundsErr) return;
+
   const requestId = ++latestRequestId;
   loading.value = true;
   error.value = null;
@@ -142,6 +159,10 @@ async function loadData() {
       api.getHealthEvaluations({
         estado: selectedFilter.value,
         proyecto_id: selectedProject.value !== 'todos' ? selectedProject.value : undefined,
+        categoria: selectedCategory.value || undefined,
+        puntaje_min: puntajeMin.value !== '' ? puntajeMin.value : undefined,
+        puntaje_max: puntajeMax.value !== '' ? puntajeMax.value : undefined,
+        ordenar: sortOrder.value,
         q: searchQuery.value.trim() || undefined,
       }),
       api.getHealthEvaluationsMetrics(),
@@ -166,6 +187,26 @@ async function loadData() {
       loading.value = false;
     }
   }
+}
+
+async function handleExportHealth() {
+  if (!canReadHealth.value) return;
+  const boundsErr = validateNumericBoundsClient(puntajeMin.value, puntajeMax.value, {
+    label: 'índice de bienestar',
+    maxAllowed: 100,
+  });
+  rangeError.value = boundsErr;
+  if (boundsErr) return;
+
+  await downloadCsv('evaluacion-salud', {
+    estado: selectedFilter.value,
+    proyecto_id: selectedProject.value !== 'todos' ? selectedProject.value : undefined,
+    categoria: selectedCategory.value || undefined,
+    puntaje_min: puntajeMin.value !== '' ? puntajeMin.value : undefined,
+    puntaje_max: puntajeMax.value !== '' ? puntajeMax.value : undefined,
+    ordenar: sortOrder.value,
+    q: searchQuery.value.trim() || undefined,
+  });
 }
 
 onMounted(() => {
@@ -384,17 +425,28 @@ async function handleSaveEvaluation() {
 
           <router-link
             to="/admin"
-            class="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-stone-700 bg-white border border-stone-300 rounded-xl hover:bg-stone-100 transition-colors shadow-xs"
+            class="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-stone-700 bg-white border border-stone-300 rounded-xl hover:bg-stone-100 transition-colors shadow-xs whitespace-nowrap shrink-0"
           >
             <ArrowLeft class="w-4 h-4" />
             Panel General
           </router-link>
 
           <button
+            v-if="canReadHealth && canExport && !accessDeniedMessage"
+            type="button"
+            @click="handleExportHealth"
+            :disabled="exporting"
+            class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-[#289EAB] hover:bg-[#1E7B85] rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <Download class="w-4 h-4" />
+            <span>{{ exporting ? 'Exportando...' : 'Exportar CSV' }}</span>
+          </button>
+
+          <button
             v-if="canReadHealth"
             @click="loadData"
             :disabled="loading"
-            class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-[#EB455F] hover:bg-[#D1324B] rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer"
+            class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-[#EB455F] hover:bg-[#D1324B] rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
           >
             <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" />
             <span>Actualizar</span>
@@ -512,7 +564,20 @@ async function handleSaveEvaluation() {
           </div>
         </div>
 
-        <!-- Success Banner -->
+        <!-- Export & Success Banners -->
+        <div
+          v-if="exportNotice"
+          role="status"
+          :class="[
+            'p-4 rounded-2xl border text-sm font-medium shadow-xs',
+            exportNotice.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-rose-50 border-rose-200 text-rose-800',
+          ]"
+        >
+          {{ exportNotice.text }}
+        </div>
+
         <div
           v-if="successNotice"
           class="bg-emerald-50 border border-emerald-200 text-emerald-800 p-4 rounded-2xl text-sm font-semibold flex items-center gap-2.5 shadow-xs"
@@ -604,6 +669,60 @@ async function handleSaveEvaluation() {
               </select>
             </div>
           </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2.5 pt-2 border-t border-stone-100 text-xs">
+            <div class="flex flex-wrap items-center gap-2">
+              <select
+                v-model="selectedCategory"
+                @change="loadData"
+                class="px-3 py-1.5 rounded-lg border border-stone-300 bg-stone-50 text-xs text-stone-700 font-medium"
+              >
+                <option value="">Todas las categorías</option>
+                <option value="ONG">ONG</option>
+                <option value="Fundación">Fundación</option>
+                <option value="Empresa">Empresa</option>
+                <option value="Institución Educativa">Institución Educativa</option>
+                <option value="Colectivo Social">Colectivo Social</option>
+              </select>
+
+              <input
+                v-model="puntajeMin"
+                type="number"
+                min="0"
+                max="100"
+                placeholder="Bienestar mín. (0-100)"
+                class="w-40 px-3 py-1.5 rounded-lg border border-stone-300 bg-stone-50 text-xs text-stone-700 tabular-nums"
+              />
+              <input
+                v-model="puntajeMax"
+                type="number"
+                min="0"
+                max="100"
+                placeholder="Bienestar máx. (0-100)"
+                class="w-40 px-3 py-1.5 rounded-lg border border-stone-300 bg-stone-50 text-xs text-stone-700 tabular-nums"
+              />
+              <button
+                type="button"
+                @click="loadData"
+                class="px-3 py-1.5 rounded-lg bg-[#EB455F] hover:bg-[#D1324B] text-white font-semibold cursor-pointer whitespace-nowrap"
+              >
+                Filtrar
+              </button>
+            </div>
+
+            <select
+              v-model="sortOrder"
+              @change="loadData"
+              class="px-3 py-1.5 rounded-lg border border-stone-300 bg-stone-50 text-xs text-stone-700 font-medium"
+            >
+              <option value="recientes">Ordenar: Más recientes</option>
+              <option value="nombre_asc">Nombre (A - Z)</option>
+              <option value="puntaje_desc">Mayor puntaje bienestar</option>
+              <option value="puntaje_asc">Menor puntaje bienestar</option>
+            </select>
+          </div>
+
+          <p v-if="rangeError" role="alert" class="text-xs font-semibold text-rose-700">{{ rangeError }}</p>
         </div>
 
         <!-- Loading -->

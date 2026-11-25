@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { api } from '../api/client';
+import { useAuthAccess, validateNumericBoundsClient } from '../composables/useAuthAccess';
 import {
   Search,
   Building2,
@@ -13,11 +14,19 @@ import {
   EyeOff,
   MapPin,
   Users,
+  Download,
 } from 'lucide-vue-next';
 
 type ProjectProposal = Awaited<ReturnType<typeof api.trackProjectProposals>>[number];
 
+const { canExport, exporting, exportNotice, refreshAccess, downloadCsv } = useAuthAccess();
+
 const email = ref('');
+const filterEstado = ref('');
+const cuposMin = ref('');
+const cuposMax = ref('');
+const sortOrder = ref<'recientes' | 'titulo_asc' | 'cupos_desc' | 'cupos_asc'>('recientes');
+const rangeError = ref<string | null>(null);
 const proposals = ref<ProjectProposal[]>([]);
 const loading = ref(false);
 const searched = ref(false);
@@ -68,12 +77,25 @@ async function search() {
   const query = email.value.trim();
   if (!query) return;
 
+  const rangeErr = validateNumericBoundsClient(cuposMin.value, cuposMax.value, {
+    label: 'cupos',
+    integerOnly: true,
+    maxAllowed: 100000,
+  });
+  rangeError.value = rangeErr;
+  if (rangeErr) return;
+
   loading.value = true;
   searched.value = true;
   error.value = '';
   proposals.value = [];
   try {
-    proposals.value = await api.trackProjectProposals(query);
+    proposals.value = await api.trackProjectProposals(query, {
+      estado: filterEstado.value || undefined,
+      cupos_min: cuposMin.value !== '' ? cuposMin.value : undefined,
+      cupos_max: cuposMax.value !== '' ? cuposMax.value : undefined,
+      ordenar: sortOrder.value,
+    });
   } catch (err: any) {
     error.value = err?.response?.data?.error || 'No se pudo consultar el seguimiento. Intenta nuevamente.';
   } finally {
@@ -81,10 +103,34 @@ async function search() {
   }
 }
 
+async function handleExportProposals() {
+  const query = email.value.trim();
+  if (!query) return;
+  const rangeErr = validateNumericBoundsClient(cuposMin.value, cuposMax.value, {
+    label: 'cupos',
+    integerOnly: true,
+    maxAllowed: 100000,
+  });
+  rangeError.value = rangeErr;
+  if (rangeErr) return;
+
+  await downloadCsv('proyectos-seguimiento', {
+    busqueda: query,
+    estado: filterEstado.value || undefined,
+    cupos_min: cuposMin.value !== '' ? cuposMin.value : undefined,
+    cupos_max: cuposMax.value !== '' ? cuposMax.value : undefined,
+    ordenar: sortOrder.value,
+  });
+}
+
 function formatDate(value?: string | null) {
   if (!value) return 'Sin fecha registrada';
   return new Date(value).toLocaleDateString('es-BO', { year: 'numeric', month: 'long', day: 'numeric' });
 }
+
+onMounted(() => {
+  refreshAccess();
+});
 </script>
 
 <template>
@@ -103,24 +149,91 @@ function formatDate(value?: string | null) {
           Consulta el estado de revisión y publicación de los proyectos enviados con el correo de contacto registrado para tu organización.
         </p>
 
-        <form @submit.prevent="search" class="flex flex-col sm:flex-row gap-3">
-          <input
-            v-model="email"
-            type="email"
-            required
-            autocomplete="email"
-            placeholder="correo@organizacion.org"
-            aria-label="Correo de contacto de la organización"
-            class="flex-1 px-4 py-3 bg-stone-50 border border-stone-200 rounded-xl text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-[#289EAB] focus:bg-white transition-all"
-          />
-          <button
-            type="submit"
-            :disabled="loading || !email.trim()"
-            class="px-6 py-3 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-sm font-semibold rounded-xl transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:bg-stone-200 disabled:text-stone-400 disabled:cursor-not-allowed"
+        <form @submit.prevent="search" class="space-y-3">
+          <div class="flex flex-col sm:flex-row gap-3">
+            <input
+              v-model="email"
+              type="email"
+              required
+              autocomplete="email"
+              placeholder="correo@organizacion.org"
+              aria-label="Correo de contacto de la organización"
+              class="flex-1 px-4 py-3 bg-stone-50 border border-stone-200 rounded-xl text-sm text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-[#289EAB] focus:bg-white transition-all"
+            />
+            <button
+              type="submit"
+              :disabled="loading || !email.trim()"
+              class="px-6 py-3 bg-[#289EAB] hover:bg-[#1E7B85] text-white text-sm font-semibold rounded-xl transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:bg-stone-200 disabled:text-stone-400 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
+            >
+              <Search class="w-4 h-4" />
+              {{ loading ? 'Consultando...' : 'Consultar proyectos' }}
+            </button>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-100 text-xs">
+            <div class="flex flex-wrap items-center gap-2">
+              <select
+                v-model="filterEstado"
+                @change="email.trim() && search()"
+                class="px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs text-stone-700 focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
+              >
+                <option value="">Todos los estados</option>
+                <option value="pendiente_revision">En revisión</option>
+                <option value="aprobado">Aprobados</option>
+                <option value="rechazado">Rechazados</option>
+              </select>
+
+              <input
+                v-model="cuposMin"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="Cupos mín."
+                aria-label="Cupos mínimos"
+                class="w-24 px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs tabular-nums"
+              />
+              <input
+                v-model="cuposMax"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="Cupos máx."
+                aria-label="Cupos máximos"
+                class="w-24 px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs tabular-nums"
+              />
+
+              <select
+                v-model="sortOrder"
+                @change="email.trim() && search()"
+                class="px-3 py-1.5 bg-stone-50 border border-stone-200 rounded-lg text-xs text-stone-700 focus:outline-none focus:ring-2 focus:ring-[#289EAB]"
+              >
+                <option value="recientes">Más recientes</option>
+                <option value="titulo_asc">Título (A-Z)</option>
+                <option value="cupos_desc">Mayor cupos</option>
+                <option value="cupos_asc">Menor cupos</option>
+              </select>
+            </div>
+
+            <button
+              v-if="canExport && email.trim()"
+              type="button"
+              @click="handleExportProposals"
+              :disabled="exporting"
+              class="px-3.5 py-1.5 bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold rounded-xl transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+            >
+              <Download class="w-3.5 h-3.5" />
+              <span>{{ exporting ? 'Exportando...' : 'Exportar CSV' }}</span>
+            </button>
+          </div>
+
+          <p v-if="rangeError" role="alert" class="text-xs font-medium text-rose-700">{{ rangeError }}</p>
+          <p
+            v-if="exportNotice"
+            role="status"
+            :class="['text-xs font-medium', exportNotice.type === 'success' ? 'text-emerald-700' : 'text-rose-700']"
           >
-            <Search class="w-4 h-4" />
-            {{ loading ? 'Consultando...' : 'Consultar proyectos' }}
-          </button>
+            {{ exportNotice.text }}
+          </p>
         </form>
       </div>
     </section>

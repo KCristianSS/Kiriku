@@ -33,6 +33,7 @@ export interface Proyecto {
   created_at?: string;
   updated_at?: string;
   organizacion_nombre?: string | null;
+  organizacion_tipo?: string | null;
   organizacion?: Organizacion | null;
 }
 
@@ -732,4 +733,67 @@ export interface DashboardMetrics {
   totalDonacionesOfrecidas?: number;
   totalDonacionesEntregadoBob?: number;
   totalEntregasRegistradas?: number;
+}
+
+export type ExportModulo =
+  | 'catalogo'
+  | 'proyectos'
+  | 'proyectos-seguimiento'
+  | 'postulaciones-seguimiento'
+  | 'donaciones'
+  | 'historial-donaciones'
+  | 'necesidades-donacion'
+  | 'postulantes'
+  | 'evaluacion-inicial'
+  | 'evaluacion-tecnica'
+  | 'evaluacion-personal'
+  | 'evaluacion-competencias'
+  | 'evaluacion-salud'
+  | 'roles'
+  | 'logs';
+
+export interface CacheStats {
+  backend: 'memory' | 'redis';
+  redisConfigured: boolean;
+  hits: number;
+  misses: number;
+  sets: number;
+  invalidations: number;
+  activeKeys: number;
+  defaultTtlSeconds: number;
+}
+
+export type SystemLogStatus = 'success' | 'denied' | 'error';
+
+export interface SystemLogRecord {
+  id: number;
+  user_id: string | null;
+  user_email: string | null;
+  user_role: string | null;
+  action: string;
+  module: string;
+  format: string | null;
+  file_size_bytes: number | null;
+  row_count: number | null;
+  duration_ms: number;
+  filters_json: Record<string, unknown> | null;
+  status: SystemLogStatus;
+  details: string | null;
+  created_at: string;
+}
+
+export interface SystemLogsResponse {
+  items: SystemLogRecord[];
+  resumen: {
+    total_logs: number;
+    total_exportaciones: number;
+    tamano_total_bytes: number;
+    duracion_promedio_ms: number;
+    intentos_denegados: number;
+  };
+  paginacion: {
+    pagina: number;
+    limite: number;
+    paginas: number;
+  };
 }

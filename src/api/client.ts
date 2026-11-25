@@ -37,6 +37,9 @@ import type {
   RegisterDeliveryPayload,
   UpdateDeliveryStatusPayload,
   DashboardMetrics,
+  CacheStats,
+  SystemLogsResponse,
+  ExportModulo,
 } from '../types';
 
 
@@ -128,6 +131,10 @@ export const api = {
     publicado?: boolean | string;
     ubicacion?: string;
     organizacion_id?: string;
+    categoria?: string;
+    cupos_min?: number | string;
+    cupos_max?: number | string;
+    ordenar?: string;
     q?: string;
   }): Promise<Proyecto[]> {
     const res = await apiClient.get<Proyecto[]>('/proyectos', { params });
@@ -138,6 +145,10 @@ export const api = {
   async getPublishedProjects(params?: {
     ubicacion?: string;
     organizacion_id?: string;
+    categoria?: string;
+    cupos_min?: number | string;
+    cupos_max?: number | string;
+    ordenar?: string;
     q?: string;
   }): Promise<Proyecto[]> {
     const res = await apiClient.get<Proyecto[]>('/proyectos/publicados', { params });
@@ -155,7 +166,15 @@ export const api = {
   },
 
   // KIR-23 (KIR-75): Consultar seguimiento de proyectos inscritos por organización
-  async trackProjectProposals(busqueda: string): Promise<Array<{
+  async trackProjectProposals(
+    busqueda: string,
+    params?: {
+      estado?: string;
+      cupos_min?: number | string;
+      cupos_max?: number | string;
+      ordenar?: string;
+    }
+  ): Promise<Array<{
     id: number | string;
     titulo: string;
     ubicacion: string;
@@ -167,8 +186,9 @@ export const api = {
     created_at?: string;
     updated_at?: string;
     organizacion_nombre: string;
+    organizacion_tipo?: string | null;
   }>> {
-    const res = await apiClient.get('/proyectos/tracking', { params: { busqueda } });
+    const res = await apiClient.get('/proyectos/tracking', { params: { busqueda, ...params } });
     return res.data;
   },
 
@@ -212,9 +232,17 @@ export const api = {
     return res.data;
   },
 
-  async trackApplication(busqueda: string): Promise<PostulacionTrackingItem[]> {
+  async trackApplication(
+    busqueda: string,
+    params?: {
+      estado?: string;
+      avance_min?: number | string;
+      avance_max?: number | string;
+      ordenar?: string;
+    }
+  ): Promise<PostulacionTrackingItem[]> {
     const res = await apiClient.get<PostulacionTrackingItem[]>('/postulaciones/tracking', {
-      params: { busqueda },
+      params: { busqueda, ...params },
     });
     return res.data;
   },
@@ -245,8 +273,11 @@ export const api = {
   async getApplicantsPool(params?: {
     q?: string;
     profesion?: string;
+    categoria?: string;
     estado?: string;
     proyecto_id?: number | string;
+    avance_min?: number | string;
+    avance_max?: number | string;
     ordenar?: string;
   }): Promise<PostulanteBancoItem[]> {
     const res = await apiClient.get<PostulanteBancoItem[]>('/postulantes', { params });
@@ -267,6 +298,10 @@ export const api = {
   async getInitialEvaluations(params?: {
     estado?: string;
     proyecto_id?: number | string;
+    categoria?: string;
+    puntaje_min?: number | string;
+    puntaje_max?: number | string;
+    ordenar?: string;
     q?: string;
   }): Promise<EvaluacionInicialItem[]> {
     const res = await apiClient.get<EvaluacionInicialItem[]>('/evaluaciones/inicial', { params });
@@ -296,6 +331,10 @@ export const api = {
   async getTechnicalEvaluations(params?: {
     estado?: string;
     proyecto_id?: number | string;
+    categoria?: string;
+    puntaje_min?: number | string;
+    puntaje_max?: number | string;
+    ordenar?: string;
     q?: string;
   }): Promise<EvaluacionTecnicaItem[]> {
     const res = await apiClient.get<EvaluacionTecnicaItem[]>('/evaluaciones/tecnica', { params });
@@ -327,6 +366,10 @@ export const api = {
   async getCompetencyEvaluations(params?: {
     estado?: string;
     proyecto_id?: number | string;
+    categoria?: string;
+    puntaje_min?: number | string;
+    puntaje_max?: number | string;
+    ordenar?: string;
     q?: string;
   }): Promise<EvaluacionCompetenciasItem[]> {
     const res = await apiClient.get<EvaluacionCompetenciasItem[]>('/evaluaciones/competencias', { params });
@@ -345,6 +388,10 @@ export const api = {
   async getPersonalEvaluations(params?: {
     estado?: string;
     proyecto_id?: number | string;
+    categoria?: string;
+    puntaje_min?: number | string;
+    puntaje_max?: number | string;
+    ordenar?: string;
     q?: string;
   }): Promise<EvaluacionPersonalItem[]> {
     const res = await apiClient.get<EvaluacionPersonalItem[]>('/evaluaciones/personal', { params });
@@ -363,6 +410,10 @@ export const api = {
   async getHealthEvaluations(params?: {
     estado?: string;
     proyecto_id?: number | string;
+    categoria?: string;
+    puntaje_min?: number | string;
+    puntaje_max?: number | string;
+    ordenar?: string;
     q?: string;
   }): Promise<EvaluacionSaludItem[]> {
     const res = await apiClient.get<EvaluacionSaludItem[]>('/evaluaciones/salud', { params });
@@ -437,7 +488,11 @@ export const api = {
   async getDonaciones(params?: {
     q?: string;
     tipo?: string;
+    categoria?: string;
     estado_entrega?: string;
+    monto_min?: number | string;
+    monto_max?: number | string;
+    ordenar?: string;
   }): Promise<Donacion[]> {
     const res = await apiClient.get<Donacion[]>('/donaciones', { params });
     return res.data;
@@ -456,8 +511,15 @@ export const api = {
     return res.data;
   },
 
-  async getDonationNeeds(): Promise<DonationNeedRequestResponse[]> {
-    const res = await apiClient.get<DonationNeedRequestResponse[]>('/necesidades-donacion');
+  async getDonationNeeds(params?: {
+    q?: string;
+    tipo?: string;
+    categoria?: string;
+    monto_min?: number | string;
+    monto_max?: number | string;
+    ordenar?: string;
+  }): Promise<DonationNeedRequestResponse[]> {
+    const res = await apiClient.get<DonationNeedRequestResponse[]>('/necesidades-donacion', { params });
     return res.data;
   },
 
@@ -465,9 +527,13 @@ export const api = {
   async getDonationHistory(params?: {
     q?: string;
     tipo?: 'economica' | 'especie';
+    categoria?: string;
     proyecto_destino_id?: number | string;
     fecha_desde?: string;
     fecha_hasta?: string;
+    monto_min?: number | string;
+    monto_max?: number | string;
+    ordenar?: string;
     pagina?: number;
     limite?: number;
   }): Promise<DonationHistoryResponse> {
@@ -545,5 +611,74 @@ export const api = {
 
   async getDashboardMetrics(): Promise<DashboardMetrics> {
     return this.getMetrics();
+  },
+
+  // Auditoría, Caché y Exportaciones CSV (Sprint 1)
+  async getCacheStats(): Promise<CacheStats> {
+    const res = await apiClient.get<CacheStats>('/cache/stats');
+    return res.data;
+  },
+
+  async getSystemLogs(params?: {
+    module?: string;
+    action?: string;
+    status?: string;
+    q?: string;
+    fecha_desde?: string;
+    fecha_hasta?: string;
+    ordenar?: string;
+    pagina?: number;
+    limite?: number;
+  }): Promise<SystemLogsResponse> {
+    const res = await apiClient.get<SystemLogsResponse>('/logs', { params });
+    return res.data;
+  },
+
+  async exportCsvReport(
+    modulo: ExportModulo,
+    params?: Record<string, unknown>
+  ): Promise<{ filename: string; sizeBytes: number }> {
+    try {
+      const cleanParams: Record<string, unknown> = {};
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          if (v !== undefined && v !== null && String(v).trim() !== '') {
+            cleanParams[k] = v;
+          }
+        }
+      }
+      const res = await apiClient.get<Blob>(`/exports/${modulo}`, {
+        params: cleanParams,
+        responseType: 'blob',
+      });
+      const blob = res.data;
+      const disposition = String(res.headers['content-disposition'] || '');
+      const match = /filename="?([^";]+)"?/i.exec(disposition);
+      const filename = match?.[1] || `kiriku_${modulo}_${new Date().toISOString().slice(0, 10)}.csv`;
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      return { filename, sizeBytes: blob.size };
+    } catch (err: any) {
+      if (err?.response?.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          const parsed = JSON.parse(text);
+          throw new Error(parsed?.error || 'No se pudo exportar el reporte CSV');
+        } catch (parseErr: any) {
+          if (parseErr instanceof Error && parseErr.message !== 'Unexpected token') {
+            throw parseErr;
+          }
+        }
+      }
+      throw new Error(err?.response?.data?.error || err?.message || 'Error al exportar el reporte CSV');
+    }
   },
 };

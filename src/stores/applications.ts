@@ -31,11 +31,19 @@ export const useApplicationsStore = defineStore('applications', () => {
     }
   }
 
-  async function trackApplication(busqueda: string) {
+  async function trackApplication(
+    busqueda: string,
+    params?: {
+      estado?: string;
+      avance_min?: number | string;
+      avance_max?: number | string;
+      ordenar?: string;
+    }
+  ) {
     loading.value = true;
     error.value = null;
     try {
-      const results = await api.trackApplication(busqueda);
+      const results = await api.trackApplication(busqueda, params);
       trackingResults.value = results;
       lastCheckedAt.value = new Date().toISOString();
       return results;
@@ -103,7 +111,16 @@ export const useApplicationsStore = defineStore('applications', () => {
     }
   }
 
-  async function fetchApplicantsPool(params?: { q?: string; profesion?: string }) {
+  async function fetchApplicantsPool(params?: {
+    q?: string;
+    profesion?: string;
+    categoria?: string;
+    estado?: string;
+    proyecto_id?: number | string;
+    avance_min?: number | string;
+    avance_max?: number | string;
+    ordenar?: string;
+  }) {
     loading.value = true;
     error.value = null;
     try {

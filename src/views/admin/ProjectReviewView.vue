@@ -22,7 +22,11 @@ import {
   ExternalLink,
   RotateCcw,
   Globe,
+  Download,
 } from 'lucide-vue-next';
+import { useAuthAccess, validateNumericBoundsClient } from '../../composables/useAuthAccess';
+
+const { canExport, exporting, exportNotice, refreshAccess, downloadCsv } = useAuthAccess();
 
 const projects = ref<Proyecto[]>([]);
 const loading = ref(false);
@@ -32,6 +36,11 @@ const successNotice = ref<string | null>(null);
 // Filters
 const selectedFilter = ref<'pendiente_revision' | 'aprobado' | 'rechazado' | 'todos'>('pendiente_revision');
 const searchQuery = ref('');
+const selectedCategory = ref('');
+const cuposMin = ref('');
+const cuposMax = ref('');
+const sortOrder = ref<'recientes' | 'titulo_asc' | 'titulo_desc' | 'cupos_desc' | 'cupos_asc'>('recientes');
+const rangeError = ref<string | null>(null);
 
 // Modal States
 const projectToReject = ref<Proyecto | null>(null);
@@ -52,16 +61,49 @@ const quickReasons = [
 ];
 
 async function loadProjects() {
+  const err = validateNumericBoundsClient(cuposMin.value, cuposMax.value, {
+    label: 'cupos',
+    integerOnly: true,
+    maxAllowed: 100000,
+  });
+  rangeError.value = err;
+  if (err) return;
+
   loading.value = true;
   error.value = null;
   try {
-    const data = await api.getProyectos();
+    const data = await api.getProyectos({
+      categoria: selectedCategory.value || undefined,
+      cupos_min: cuposMin.value !== '' ? cuposMin.value : undefined,
+      cupos_max: cuposMax.value !== '' ? cuposMax.value : undefined,
+      ordenar: sortOrder.value,
+      q: searchQuery.value.trim() || undefined,
+    });
     projects.value = data;
   } catch (err: any) {
     error.value = err?.response?.data?.error || 'No se pudieron cargar los proyectos para revisión.';
   } finally {
     loading.value = false;
   }
+}
+
+async function handleExportProjects() {
+  const err = validateNumericBoundsClient(cuposMin.value, cuposMax.value, {
+    label: 'cupos',
+    integerOnly: true,
+    maxAllowed: 100000,
+  });
+  rangeError.value = err;
+  if (err) return;
+
+  await downloadCsv('proyectos', {
+    estado: selectedFilter.value !== 'todos' ? selectedFilter.value : undefined,
+    categoria: selectedCategory.value || undefined,
+    cupos_min: cuposMin.value !== '' ? cuposMin.value : undefined,
+    cupos_max: cuposMax.value !== '' ? cuposMax.value : undefined,
+    ordenar: sortOrder.value,
+    q: searchQuery.value.trim() || undefined,
+  });
 }
 
 // Metrics
@@ -73,18 +115,8 @@ const countTotal = computed(() => projects.value.length);
 // Filtered projects
 const filteredProjects = computed(() => {
   return projects.value.filter((p) => {
-    // Status filter
     if (selectedFilter.value !== 'todos' && p.estado !== selectedFilter.value) {
       return false;
-    }
-    // Search query
-    if (searchQuery.value.trim()) {
-      const q = searchQuery.value.toLowerCase();
-      const matchTitle = p.titulo?.toLowerCase().includes(q);
-      const matchDesc = p.descripcion?.toLowerCase().includes(q);
-      const matchLoc = p.ubicacion?.toLowerCase().includes(q);
-      const matchOrg = p.organizacion_nombre?.toLowerCase().includes(q);
-      return matchTitle || matchDesc || matchLoc || matchOrg;
     }
     return true;
   });
@@ -186,6 +218,7 @@ function formatDate(dateStr?: string) {
 }
 
 onMounted(() => {
+  refreshAccess();
   loadProjects();
 });
 </script>
@@ -202,14 +235,27 @@ onMounted(() => {
         <span>Volver al Panel de Administración</span>
       </router-link>
 
-      <button
-        @click="loadProjects"
-        :disabled="loading"
-        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-stone-200 text-xs font-semibold text-stone-700 hover:bg-stone-50 transition-colors cursor-pointer shadow-2xs"
-      >
-        <RefreshCw :class="['w-3.5 h-3.5', loading ? 'animate-spin' : '']" />
-        <span>Actualizar lista</span>
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          v-if="canExport"
+          type="button"
+          @click="handleExportProjects"
+          :disabled="exporting"
+          class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#289EAB] hover:bg-[#1E7B85] text-white text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-60"
+        >
+          <Download class="w-3.5 h-3.5" />
+          <span>{{ exporting ? 'Exportando...' : 'Exportar CSV' }}</span>
+        </button>
+
+        <button
+          @click="loadProjects"
+          :disabled="loading"
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-stone-200 text-xs font-semibold text-stone-700 hover:bg-stone-50 transition-colors cursor-pointer shadow-2xs"
+        >
+          <RefreshCw :class="['w-3.5 h-3.5', loading ? 'animate-spin' : '']" />
+          <span>Actualizar lista</span>
+        </button>
+      </div>
     </div>
 
     <!-- Header Banner (KIR-21) -->
@@ -316,70 +362,139 @@ onMounted(() => {
       </button>
     </div>
 
-    <!-- Search & Filters Toolbar -->
-    <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-stone-200 shadow-xs">
-      <!-- Search Input -->
-      <div class="relative flex-1">
-        <Search class="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
-        <input
-          v-model="searchQuery"
-          type="search"
-          placeholder="Buscar por título, ubicación u organización..."
-          class="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-200 focus:border-[#289EAB] focus:outline-none"
-        />
-      </div>
-
-      <!-- Status Tabs -->
-      <div class="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
-        <button
-          @click="selectedFilter = 'pendiente_revision'"
-          :class="[
-            'px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer',
-            selectedFilter === 'pendiente_revision'
-              ? 'bg-amber-600 text-white shadow-2xs'
-              : 'text-stone-600 hover:bg-stone-100'
-          ]"
-        >
-          Pendientes ({{ countPending }})
-        </button>
-
-        <button
-          @click="selectedFilter = 'aprobado'"
-          :class="[
-            'px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer',
-            selectedFilter === 'aprobado'
-              ? 'bg-emerald-600 text-white shadow-2xs'
-              : 'text-stone-600 hover:bg-stone-100'
-          ]"
-        >
-          Aprobados ({{ countApproved }})
-        </button>
-
-        <button
-          @click="selectedFilter = 'rechazado'"
-          :class="[
-            'px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer',
-            selectedFilter === 'rechazado'
-              ? 'bg-red-600 text-white shadow-2xs'
-              : 'text-stone-600 hover:bg-stone-100'
-          ]"
-        >
-          Rechazados ({{ countRejected }})
-        </button>
-
-        <button
-          @click="selectedFilter = 'todos'"
-          :class="[
-            'px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer',
-            selectedFilter === 'todos'
-              ? 'bg-stone-800 text-white shadow-2xs'
-              : 'text-stone-600 hover:bg-stone-100'
-          ]"
-        >
-          Todos ({{ countTotal }})
-        </button>
-      </div>
+    <div
+      v-if="exportNotice"
+      role="status"
+      :class="['p-3.5 rounded-2xl border text-xs sm:text-sm', exportNotice.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800']"
+    >
+      {{ exportNotice.text }}
     </div>
+
+    <!-- Search & Filters Toolbar -->
+    <form @submit.prevent="loadProjects" class="bg-white p-4 rounded-2xl border border-stone-200 shadow-xs space-y-3">
+      <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        <!-- Search Input -->
+        <div class="relative flex-1">
+          <Search class="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            v-model="searchQuery"
+            type="search"
+            placeholder="Buscar por título, ubicación u organización..."
+            class="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-200 focus:border-[#289EAB] focus:outline-none"
+          />
+        </div>
+
+        <!-- Status Tabs -->
+        <div class="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
+          <button
+            type="button"
+            @click="selectedFilter = 'pendiente_revision'"
+            :class="[
+              'px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer',
+              selectedFilter === 'pendiente_revision'
+                ? 'bg-amber-600 text-white shadow-2xs'
+                : 'text-stone-600 hover:bg-stone-100'
+            ]"
+          >
+            Pendientes ({{ countPending }})
+          </button>
+
+          <button
+            type="button"
+            @click="selectedFilter = 'aprobado'"
+            :class="[
+              'px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer',
+              selectedFilter === 'aprobado'
+                ? 'bg-emerald-600 text-white shadow-2xs'
+                : 'text-stone-600 hover:bg-stone-100'
+            ]"
+          >
+            Aprobados ({{ countApproved }})
+          </button>
+
+          <button
+            type="button"
+            @click="selectedFilter = 'rechazado'"
+            :class="[
+              'px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer',
+              selectedFilter === 'rechazado'
+                ? 'bg-red-600 text-white shadow-2xs'
+                : 'text-stone-600 hover:bg-stone-100'
+            ]"
+          >
+            Rechazados ({{ countRejected }})
+          </button>
+
+          <button
+            type="button"
+            @click="selectedFilter = 'todos'"
+            :class="[
+              'px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer',
+              selectedFilter === 'todos'
+                ? 'bg-stone-800 text-white shadow-2xs'
+                : 'text-stone-600 hover:bg-stone-100'
+            ]"
+          >
+            Todos ({{ countTotal }})
+          </button>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-100 text-xs">
+        <div class="flex flex-wrap items-center gap-2">
+          <select
+            v-model="selectedCategory"
+            @change="loadProjects"
+            class="px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs text-stone-700"
+          >
+            <option value="">Todas las categorías</option>
+            <option value="ONG">ONG</option>
+            <option value="Fundación">Fundación</option>
+            <option value="Empresa">Empresa</option>
+            <option value="Institución Educativa">Institución Educativa</option>
+            <option value="Colectivo Social">Colectivo Social</option>
+          </select>
+
+          <input
+            v-model="cuposMin"
+            type="number"
+            min="0"
+            step="1"
+            placeholder="Cupos mín."
+            class="w-24 px-2.5 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs tabular-nums"
+          />
+          <input
+            v-model="cuposMax"
+            type="number"
+            min="0"
+            step="1"
+            placeholder="Cupos máx."
+            class="w-24 px-2.5 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs tabular-nums"
+          />
+
+          <select
+            v-model="sortOrder"
+            @change="loadProjects"
+            class="px-3 py-1.5 rounded-lg border border-stone-200 bg-stone-50 text-xs text-stone-700"
+          >
+            <option value="recientes">Más recientes</option>
+            <option value="titulo_asc">Título (A-Z)</option>
+            <option value="titulo_desc">Título (Z-A)</option>
+            <option value="cupos_desc">Mayor cupos</option>
+            <option value="cupos_asc">Menor cupos</option>
+          </select>
+        </div>
+
+        <button
+          type="submit"
+          class="px-4 py-1.5 rounded-xl bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+        >
+          Aplicar filtros
+        </button>
+      </div>
+
+      <p v-if="rangeError" role="alert" class="text-xs font-medium text-rose-700">{{ rangeError }}</p>
+    </form>
 
     <!-- Projects List Cards (KIR-84: Interfaz de revisión) -->
     <div v-if="loading && !projects.length" class="py-20 text-center text-xs text-stone-500">

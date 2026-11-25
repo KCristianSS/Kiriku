@@ -32,9 +32,37 @@ import {
   toDonationHistoryItem,
   type DonationHistoryRow,
 } from './donation-history';
-import { authenticate, requirePermission, type AuthenticatedRequest } from './authorization';
+import { authenticate, requirePermission, signAuthToken, type AuthenticatedRequest } from './authorization';
+import { cacheService, buildCacheKey } from './cache';
+import {
+  DONATION_SORT_OPTIONS,
+  PROJECT_SORT_OPTIONS,
+  filterAndSortDonations,
+  filterAndSortProjects,
+  normalizeCategoryFilter,
+  normalizeSortOrder,
+  validatePriceRange,
+  validateQuotaRange,
+  validateScoreRange,
+} from './catalog-filters';
+import {
+  buildCsvReport,
+  querySystemLogs,
+  recordSystemLog,
+  type CsvColumn,
+} from './audit-logs';
+import { hasPermission } from './permissions';
 
 const router: Router = express.Router();
+
+function getActorMeta(req: Request) {
+  const authReq = req as AuthenticatedRequest;
+  return {
+    user_id: authReq.userId || null,
+    user_email: authReq.userEmail || null,
+    user_role: authReq.userRole || null,
+  };
+}
 
 // Status endpoint (never throws when DATABASE_URL is not yet configured)
 router.get('/status', (_req: Request, res: Response) => {
@@ -106,11 +134,27 @@ router.post('/auth/login', async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
+      await recordSystemLog({
+        user_email: cleanEmail,
+        action: 'AUTH_LOGIN',
+        module: 'auth',
+        status: 'denied',
+        details: 'Intento de inicio de sesión con correo no registrado',
+      }).catch(() => {});
       return res.status(404).json({ error: 'No existe una cuenta registrada con este correo' });
     }
 
     const user = rows[0];
     if (user.password !== password) {
+      await recordSystemLog({
+        user_id: String(user.id),
+        user_email: user.email,
+        user_role: user.rol,
+        action: 'AUTH_LOGIN',
+        module: 'auth',
+        status: 'denied',
+        details: 'Contraseña incorrecta al iniciar sesión',
+      }).catch(() => {});
       return res.status(401).json({ error: 'Contraseña incorrecta. Por favor verifica tus credenciales.' });
     }
 
@@ -130,8 +174,24 @@ router.post('/auth/login', async (req: Request, res: Response) => {
       [user.id, user.rol]
     );
 
+    const jwtToken = signAuthToken({
+      sub: String(user.id),
+      email: user.email,
+      rol: user.rol,
+    });
+
+    await recordSystemLog({
+      user_id: String(user.id),
+      user_email: user.email,
+      user_role: user.rol,
+      action: 'AUTH_LOGIN',
+      module: 'auth',
+      status: 'success',
+      details: `Inicio de sesión exitoso (${user.rol})`,
+    }).catch(() => {});
+
     res.json({
-      token: user.id,
+      token: jwtToken,
       user: {
         id: user.id,
         nombre: user.nombre,
@@ -222,11 +282,19 @@ router.get('/proyectos/tracking', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Ingrese el correo de contacto de la organización' });
     }
 
+    const quotaRange = validateQuotaRange(req.query.cupos_min, req.query.cupos_max);
+    if (!quotaRange.ok) {
+      return res.status(400).json({ error: quotaRange.error });
+    }
+
+    const estadoFilter = normalizeCategoryFilter(req.query.estado);
+    const ordenar = normalizeSortOrder(req.query.ordenar, PROJECT_SORT_OPTIONS, 'recientes');
+
     const rows = await query(
       `SELECT p.id, p.titulo, p.ubicacion, p.cupos_disponibles,
               p.estado, COALESCE(p.publicado, false) AS publicado, p.fecha_publicacion,
               p.motivo_rechazo, p.created_at, p.updated_at,
-              o.nombre AS organizacion_nombre
+              o.nombre AS organizacion_nombre, o.tipo AS organizacion_tipo
        FROM proyectos p
        JOIN organizaciones o ON o.id = p.organizacion_id
        WHERE LOWER(TRIM(o.contacto_email)) = LOWER($1)
@@ -234,7 +302,17 @@ router.get('/proyectos/tracking', async (req: Request, res: Response) => {
       [busqueda]
     );
 
-    res.json(rows);
+    const filteredByState = estadoFilter
+      ? rows.filter((r: any) => String(r.estado || '').toLowerCase() === estadoFilter.toLowerCase())
+      : rows;
+
+    const finalRows = filterAndSortProjects(filteredByState as any[], {
+      cuposMin: quotaRange.min,
+      cuposMax: quotaRange.max,
+      ordenar,
+    });
+
+    res.json(finalRows);
   } catch (err: any) {
     console.error('Error tracking project proposals:', err);
     res.status(500).json({ error: 'Error al consultar el seguimiento de proyectos' });
@@ -243,7 +321,33 @@ router.get('/proyectos/tracking', async (req: Request, res: Response) => {
 
 router.get('/proyectos', async (req: Request, res: Response) => {
   try {
-    const { estado, publicado, ubicacion, organizacion_id, q } = req.query;
+    const { estado, publicado, ubicacion, organizacion_id, q, categoria, cupos_min, cupos_max, ordenar } = req.query;
+    const quotaRange = validateQuotaRange(cupos_min, cupos_max);
+    if (!quotaRange.ok) {
+      return res.status(400).json({ error: quotaRange.error });
+    }
+
+    const cleanCategoria = normalizeCategoryFilter(categoria);
+    const cleanSort = normalizeSortOrder(ordenar, PROJECT_SORT_OPTIONS, 'recientes');
+    const cacheKey = buildCacheKey('proyectos:list', {
+      estado,
+      publicado,
+      ubicacion,
+      organizacion_id,
+      q,
+      categoria: cleanCategoria,
+      cupos_min: quotaRange.min,
+      cupos_max: quotaRange.max,
+      ordenar: cleanSort,
+    });
+
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
+
     let sql = `
       SELECT p.*, 
              o.nombre as organizacion_nombre, 
@@ -275,6 +379,21 @@ router.get('/proyectos', async (req: Request, res: Response) => {
       sql += ` AND p.organizacion_id = $${params.length}`;
     }
 
+    if (cleanCategoria) {
+      params.push(cleanCategoria);
+      sql += ` AND LOWER(COALESCE(o.tipo, '')) = LOWER($${params.length})`;
+    }
+
+    if (quotaRange.min !== null) {
+      params.push(quotaRange.min);
+      sql += ` AND p.cupos_disponibles >= $${params.length}`;
+    }
+
+    if (quotaRange.max !== null) {
+      params.push(quotaRange.max);
+      sql += ` AND p.cupos_disponibles <= $${params.length}`;
+    }
+
     if (q) {
       params.push(`%${q}%`);
       sql += ` AND (p.titulo ILIKE $${params.length} OR p.descripcion ILIKE $${params.length} OR p.ubicacion ILIKE $${params.length})`;
@@ -284,7 +403,6 @@ router.get('/proyectos', async (req: Request, res: Response) => {
 
     const rows = await query(sql, params);
 
-    // Format with nested organizacion object
     const formatted = rows.map((r: any) => ({
       ...r,
       publicado: Boolean(r.publicado),
@@ -298,7 +416,17 @@ router.get('/proyectos', async (req: Request, res: Response) => {
         : null,
     }));
 
-    res.json(formatted);
+    const sorted = filterAndSortProjects(formatted, {
+      categoria: cleanCategoria,
+      cuposMin: quotaRange.min,
+      cuposMax: quotaRange.max,
+      ordenar: cleanSort,
+    });
+
+    await cacheService.set(cacheKey, sorted, 60);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+    res.json(sorted);
   } catch (err: any) {
     console.error('Error fetching proyectos:', err);
     res.status(500).json({ error: 'Error al consultar proyectos' });
@@ -308,7 +436,31 @@ router.get('/proyectos', async (req: Request, res: Response) => {
 // KIR-79 & KIR-80: Listado público exclusivo de proyectos aprobados y publicados
 router.get('/proyectos/publicados', async (req: Request, res: Response) => {
   try {
-    const { ubicacion, organizacion_id, q } = req.query;
+    const { ubicacion, organizacion_id, q, categoria, cupos_min, cupos_max, ordenar } = req.query;
+    const quotaRange = validateQuotaRange(cupos_min, cupos_max);
+    if (!quotaRange.ok) {
+      return res.status(400).json({ error: quotaRange.error });
+    }
+
+    const cleanCategoria = normalizeCategoryFilter(categoria);
+    const cleanSort = normalizeSortOrder(ordenar, PROJECT_SORT_OPTIONS, 'recientes');
+    const cacheKey = buildCacheKey('proyectos:publicados', {
+      ubicacion,
+      organizacion_id,
+      q,
+      categoria: cleanCategoria,
+      cupos_min: quotaRange.min,
+      cupos_max: quotaRange.max,
+      ordenar: cleanSort,
+    });
+
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
+
     let sql = `
       SELECT p.*, 
              o.nombre as organizacion_nombre, 
@@ -328,6 +480,21 @@ router.get('/proyectos/publicados', async (req: Request, res: Response) => {
     if (organizacion_id) {
       params.push(organizacion_id);
       sql += ` AND p.organizacion_id = $${params.length}`;
+    }
+
+    if (cleanCategoria) {
+      params.push(cleanCategoria);
+      sql += ` AND LOWER(COALESCE(o.tipo, '')) = LOWER($${params.length})`;
+    }
+
+    if (quotaRange.min !== null) {
+      params.push(quotaRange.min);
+      sql += ` AND p.cupos_disponibles >= $${params.length}`;
+    }
+
+    if (quotaRange.max !== null) {
+      params.push(quotaRange.max);
+      sql += ` AND p.cupos_disponibles <= $${params.length}`;
     }
 
     if (q) {
@@ -352,7 +519,20 @@ router.get('/proyectos/publicados', async (req: Request, res: Response) => {
         : null,
     }));
 
-    res.json(formatted);
+    const sorted =
+      cleanSort === 'recientes'
+        ? formatted
+        : filterAndSortProjects(formatted, {
+            categoria: cleanCategoria,
+            cuposMin: quotaRange.min,
+            cuposMax: quotaRange.max,
+            ordenar: cleanSort,
+          });
+
+    await cacheService.set(cacheKey, sorted, 60);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+    res.json(sorted);
   } catch (err: any) {
     console.error('Error fetching published proyectos:', err);
     res.status(500).json({ error: 'Error al consultar proyectos publicados' });
@@ -503,6 +683,15 @@ router.post('/proyectos', async (req: Request, res: Response) => {
       ]
     );
 
+    await cacheService.delByPrefix('proyectos:');
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'PROJECT_PROPOSE',
+      module: 'proyectos',
+      status: 'success',
+      details: `Propuesta registrada: ${rows[0].titulo} (ID ${rows[0].id})`,
+    }).catch(() => {});
+
     res.status(201).json({
       message: 'Propuesta de proyecto comunitario registrada con éxito en estado pendiente de revisión',
       proyecto: rows[0],
@@ -528,7 +717,6 @@ router.patch('/proyectos/:id/revision', authenticate, requirePermission('project
       return res.status(400).json({ error: 'Debe especificar el motivo de rechazo' });
     }
 
-    // Si se rechaza o reabre a pendiente_revision, despublicar automáticamente para proteger el catálogo
     const isApproved = estado === 'aprobado';
     const rows = await query(
       `UPDATE proyectos 
@@ -545,6 +733,15 @@ router.patch('/proyectos/:id/revision', authenticate, requirePermission('project
     if (!rows.length) {
       return res.status(404).json({ error: 'Proyecto no encontrado' });
     }
+
+    await cacheService.delByPrefix('proyectos:');
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'PROJECT_REVIEW',
+      module: 'proyectos',
+      status: 'success',
+      details: `Proyecto ${id} marcado como ${estado}`,
+    }).catch(() => {});
 
     res.json(rows[0]);
   } catch (err: any) {
@@ -576,7 +773,6 @@ router.patch('/proyectos/:id/publicacion', authenticate, requirePermission('proj
 
     const existing = existingRows[0];
 
-    // Regla KIR-79: Solo los proyectos con estado 'aprobado' pueden publicarse
     if (publicado && existing.estado !== 'aprobado') {
       return res.status(400).json({
         error: `Solo los proyectos en estado aprobado pueden ser publicados. Estado actual: ${existing.estado}`,
@@ -592,6 +788,15 @@ router.patch('/proyectos/:id/publicacion', authenticate, requirePermission('proj
        RETURNING *`,
       [publicado, id]
     );
+
+    await cacheService.delByPrefix('proyectos:');
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'PROJECT_PUBLISH',
+      module: 'proyectos',
+      status: 'success',
+      details: `Proyecto "${existing.titulo}" ${publicado ? 'publicado' : 'ocultado'}`,
+    }).catch(() => {});
 
     res.json({
       message: publicado
@@ -807,6 +1012,18 @@ router.post('/postulaciones', async (req: Request, res: Response) => {
         [postulacionId, e.etapa, e.estado, e.evaluador, e.comentarios]
       );
     }
+
+    await Promise.all([
+      cacheService.delByPrefix('postulantes:'),
+      cacheService.delByPrefix('evaluaciones:'),
+    ]);
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'APPLICATION_CREATE',
+      module: 'postulaciones',
+      status: 'success',
+      details: `Postulación KIR-${postulacionId} registrada para proyecto ${proyecto_id}`,
+    }).catch(() => {});
 
     res.status(201).json({
       message: 'Postulación registrada con éxito',
@@ -1032,10 +1249,17 @@ export function buildProcessProgress(
 // KIR-51: Seguimiento del Postulante en tiempo real (por CI, Correo, Nombre o Código KIR-ID)
 router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
   try {
-    const { busqueda } = req.query;
+    const { busqueda, estado, avance_min, avance_max, ordenar } = req.query;
     if (!busqueda || typeof busqueda !== 'string' || !busqueda.trim()) {
       return res.status(400).json({ error: 'Ingrese su CI, Correo Electrónico o Código de Seguimiento para consultar' });
     }
+
+    const scoreRange = validateScoreRange(avance_min, avance_max, 100);
+    if (!scoreRange.ok) {
+      return res.status(400).json({ error: scoreRange.error });
+    }
+    const cleanEstado = normalizeCategoryFilter(estado).toLowerCase();
+    const cleanSort = normalizeSortOrder(ordenar, ['recientes', 'avance_desc', 'avance_asc', 'titulo_asc'] as const, 'recientes');
 
     const term = busqueda.trim();
     const codeMatch = term.match(/^(?:KIR-?|#)?(\d+)$/i);
@@ -1124,7 +1348,24 @@ router.get('/postulaciones/tracking', async (req: Request, res: Response) => {
       });
     }
 
-    res.json(results);
+    let filteredResults = results.filter((item) => {
+      if (cleanEstado && item.avance.estado_visible.codigo !== cleanEstado && item.postulacion.estado_general !== cleanEstado) {
+        return false;
+      }
+      if (scoreRange.min !== null && item.avance.porcentaje < scoreRange.min) return false;
+      if (scoreRange.max !== null && item.avance.porcentaje > scoreRange.max) return false;
+      return true;
+    });
+
+    if (cleanSort === 'avance_desc') {
+      filteredResults.sort((a, b) => b.avance.porcentaje - a.avance.porcentaje);
+    } else if (cleanSort === 'avance_asc') {
+      filteredResults.sort((a, b) => a.avance.porcentaje - b.avance.porcentaje);
+    } else if (cleanSort === 'titulo_asc') {
+      filteredResults.sort((a, b) => a.postulacion.proyecto.titulo.localeCompare(b.postulacion.proyecto.titulo, 'es'));
+    }
+
+    res.json(filteredResults);
   } catch (err: any) {
     console.error('Error tracking postulant:', err);
     res.status(500).json({ error: 'Error al consultar seguimiento de postulación' });
@@ -1222,7 +1463,12 @@ router.get('/postulaciones/:id/estado', async (req: Request, res: Response) => {
 // Banco de Postulantes & Lista de postulaciones para Administradores
 router.get('/postulaciones', authenticate, requirePermission('applications.read'), async (req: Request, res: Response) => {
   try {
-    const { estado, proyecto_id, reasignacion, reenganche, q } = req.query;
+    const { estado, proyecto_id, reasignacion, reenganche, q, avance_min, avance_max, ordenar } = req.query;
+    const scoreRange = validateScoreRange(avance_min, avance_max, 100);
+    if (!scoreRange.ok) {
+      return res.status(400).json({ error: scoreRange.error });
+    }
+    const cleanSort = normalizeSortOrder(ordenar, ['recientes', 'avance_desc', 'avance_asc', 'nombre_asc'] as const, 'recientes');
 
     let sql = `
       SELECT app.id as postulacion_id,
@@ -1301,6 +1547,9 @@ router.get('/postulaciones', authenticate, requirePermission('applications.read'
           [row.postulacion_id]
         );
 
+        const etapasAprobadas = etapas.filter((e: any) => e.estado === 'aprobado').length;
+        const porcentajeAvance = Math.round((etapasAprobadas / 5) * 100);
+
         return {
           id: row.postulacion_id,
           estado_general: row.estado_general,
@@ -1308,6 +1557,8 @@ router.get('/postulaciones', authenticate, requirePermission('applications.read'
           es_reenganche: row.es_reasignacion,
           created_at: row.postulacion_fecha,
           updated_at: row.updated_at,
+          etapas_aprobadas: etapasAprobadas,
+          porcentaje_avance: porcentajeAvance,
           postulante: {
             id: row.postulante_id,
             nombres: row.nombres,
@@ -1332,7 +1583,26 @@ router.get('/postulaciones', authenticate, requirePermission('applications.read'
       })
     );
 
-    res.json(appsWithEtapas);
+    const filteredApps = appsWithEtapas.filter((app) => {
+      if (scoreRange.min !== null && app.porcentaje_avance < scoreRange.min) return false;
+      if (scoreRange.max !== null && app.porcentaje_avance > scoreRange.max) return false;
+      return true;
+    });
+
+    if (cleanSort === 'avance_desc') {
+      filteredApps.sort((a, b) => b.porcentaje_avance - a.porcentaje_avance);
+    } else if (cleanSort === 'avance_asc') {
+      filteredApps.sort((a, b) => a.porcentaje_avance - b.porcentaje_avance);
+    } else if (cleanSort === 'nombre_asc') {
+      filteredApps.sort((a, b) =>
+        `${a.postulante.nombres} ${a.postulante.apellidos}`.localeCompare(
+          `${b.postulante.nombres} ${b.postulante.apellidos}`,
+          'es'
+        )
+      );
+    }
+
+    res.json(filteredApps);
   } catch (err: any) {
     console.error('Error fetching admin applications:', err);
     res.status(500).json({ error: 'Error al consultar postulaciones de administración' });
@@ -1401,7 +1671,31 @@ router.get('/postulantes/metricas/resumen', async (_req: Request, res: Response)
 // KIR-94 & KIR-95: Consulta, filtros avanzados y avance parcial del banco de postulantes
 router.get('/postulantes', async (req: Request, res: Response) => {
   try {
-    const { q, profesion, estado, proyecto_id, ordenar } = req.query;
+    const { q, profesion, categoria, estado, proyecto_id, ordenar, avance_min, avance_max } = req.query;
+    const scoreRange = validateScoreRange(avance_min, avance_max, 100);
+    if (!scoreRange.ok) {
+      return res.status(400).json({ error: scoreRange.error });
+    }
+
+    const cleanProfession = normalizeCategoryFilter(profesion || categoria);
+    const cleanEstado = normalizeCategoryFilter(estado);
+    const cleanSort = normalizeSortOrder(ordenar, ['recientes', 'nombre_asc', 'avance_desc', 'avance_asc'] as const, 'recientes');
+    const cacheKey = buildCacheKey('postulantes:list', {
+      q,
+      profesion: cleanProfession,
+      estado: cleanEstado,
+      proyecto_id,
+      ordenar: cleanSort,
+      avance_min: scoreRange.min,
+      avance_max: scoreRange.max,
+    });
+
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
 
     let sql = `
       SELECT p.*,
@@ -1441,20 +1735,20 @@ router.get('/postulantes', async (req: Request, res: Response) => {
       )`;
     }
 
-    // Filtro por profesión / ocupación
-    if (profesion && typeof profesion === 'string' && profesion.trim()) {
-      params.push(`%${profesion.trim()}%`);
+    // Filtro por profesión / ocupación (categoría de perfil)
+    if (cleanProfession) {
+      params.push(`%${cleanProfession}%`);
       sql += ` AND p.profesion_ocupacion ILIKE $${params.length}`;
     }
 
     // Filtro por estado de postulación
-    if (estado && typeof estado === 'string') {
-      if (estado === 'sin_postulacion') {
+    if (cleanEstado) {
+      if (cleanEstado === 'sin_postulacion') {
         sql += ` AND app.id IS NULL`;
-      } else if (estado === 'reasignacion') {
+      } else if (cleanEstado === 'reasignacion') {
         sql += ` AND app.es_reasignacion = true`;
       } else {
-        params.push(estado);
+        params.push(cleanEstado);
         sql += ` AND app.estado_general = $${params.length}`;
       }
     }
@@ -1543,13 +1837,25 @@ router.get('/postulantes', async (req: Request, res: Response) => {
       };
     });
 
+    // Filtrar por rango de avance si fue solicitado
+    if (scoreRange.min !== null || scoreRange.max !== null) {
+      formatted = formatted.filter((item) => {
+        if (scoreRange.min !== null && item.porcentaje_avance < scoreRange.min) return false;
+        if (scoreRange.max !== null && item.porcentaje_avance > scoreRange.max) return false;
+        return true;
+      });
+    }
+
     // Ordenamiento por avance si fue solicitado
-    if (ordenar === 'avance_desc') {
+    if (cleanSort === 'avance_desc') {
       formatted.sort((a, b) => b.porcentaje_avance - a.porcentaje_avance);
-    } else if (ordenar === 'avance_asc') {
+    } else if (cleanSort === 'avance_asc') {
       formatted.sort((a, b) => a.porcentaje_avance - b.porcentaje_avance);
     }
 
+    await cacheService.set(cacheKey, formatted, 45);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
     res.json(formatted);
   } catch (err: any) {
     console.error('Error fetching postulantes pool:', err);
@@ -1665,10 +1971,96 @@ router.get('/evaluaciones/inicial/metricas', async (_req: Request, res: Response
   }
 });
 
+const EVALUATION_SORT_OPTIONS = ['recientes', 'nombre_asc', 'puntaje_desc', 'puntaje_asc'] as const;
+
+function extractEvaluationScore(item: any): number | null {
+  if (typeof item.puntaje_promedio === 'number' && Number.isFinite(item.puntaje_promedio)) {
+    return item.puntaje_promedio;
+  }
+  const text = String(item.comentarios || '');
+  const m100 = text.match(/(\d+(?:\.\d+)?)\s*\/\s*100/);
+  if (m100) return Number(m100[1]);
+  const m5 = text.match(/(\d+(?:\.\d+)?)\s*\/\s*5/);
+  if (m5) return Number(m5[1]);
+  return null;
+}
+
+function filterAndSortEvaluationItems<
+  T extends {
+    postulante?: { nombres?: string; apellidos?: string; profesion_ocupacion?: string | null };
+    puntaje_promedio?: number | null;
+    comentarios?: string | null;
+    etapa_id?: number;
+  },
+>(
+  items: T[],
+  opts: {
+    categoria?: string;
+    puntajeMin?: number | null;
+    puntajeMax?: number | null;
+    ordenar?: (typeof EVALUATION_SORT_OPTIONS)[number];
+  }
+): T[] {
+  const cat = normalizeCategoryFilter(opts.categoria).toLowerCase();
+  const filtered = items.filter((item) => {
+    if (cat) {
+      const prof = String(item.postulante?.profesion_ocupacion || '').toLowerCase();
+      if (!prof.includes(cat)) return false;
+    }
+    if (opts.puntajeMin !== null && opts.puntajeMin !== undefined) {
+      const score = extractEvaluationScore(item);
+      if (score === null || score < opts.puntajeMin) return false;
+    }
+    if (opts.puntajeMax !== null && opts.puntajeMax !== undefined) {
+      const score = extractEvaluationScore(item);
+      if (score === null || score > opts.puntajeMax) return false;
+    }
+    return true;
+  });
+
+  const sort = opts.ordenar || 'recientes';
+  if (sort === 'nombre_asc') {
+    return [...filtered].sort((a, b) =>
+      `${a.postulante?.nombres || ''} ${a.postulante?.apellidos || ''}`.localeCompare(
+        `${b.postulante?.nombres || ''} ${b.postulante?.apellidos || ''}`,
+        'es'
+      )
+    );
+  }
+  if (sort === 'puntaje_desc') {
+    return [...filtered].sort((a, b) => (extractEvaluationScore(b) ?? -1) - (extractEvaluationScore(a) ?? -1));
+  }
+  if (sort === 'puntaje_asc') {
+    return [...filtered].sort((a, b) => (extractEvaluationScore(a) ?? 999) - (extractEvaluationScore(b) ?? 999));
+  }
+  return filtered;
+}
+
 // KIR-70 & KIR-71: Consulta y listado de postulaciones en etapa inicial
 router.get('/evaluaciones/inicial', async (req: Request, res: Response) => {
   try {
-    const { estado, proyecto_id, q } = req.query;
+    const { estado, proyecto_id, q, categoria, puntaje_min, puntaje_max, ordenar } = req.query;
+    const scoreRange = validateScoreRange(puntaje_min, puntaje_max, 100);
+    if (!scoreRange.ok) {
+      return res.status(400).json({ error: scoreRange.error });
+    }
+    const cleanCategoria = normalizeCategoryFilter(categoria);
+    const cleanSort = normalizeSortOrder(ordenar, EVALUATION_SORT_OPTIONS, 'recientes');
+    const cacheKey = buildCacheKey('evaluaciones:inicial', {
+      estado,
+      proyecto_id,
+      q,
+      categoria: cleanCategoria,
+      puntaje_min: scoreRange.min,
+      puntaje_max: scoreRange.max,
+      ordenar: cleanSort,
+    });
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
 
     let sql = `
       SELECT ee.id as etapa_id,
@@ -1773,7 +2165,17 @@ router.get('/evaluaciones/inicial', async (req: Request, res: Response) => {
       };
     });
 
-    res.json(formatted);
+    const finalRows = filterAndSortEvaluationItems(formatted, {
+      categoria: cleanCategoria,
+      puntajeMin: scoreRange.min,
+      puntajeMax: scoreRange.max,
+      ordenar: cleanSort,
+    });
+
+    await cacheService.set(cacheKey, finalRows, 45);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+    res.json(finalRows);
   } catch (err: any) {
     console.error('Error fetching initial evaluations:', err);
     res.status(500).json({ error: 'Error al consultar evaluaciones iniciales' });
@@ -1863,6 +2265,18 @@ router.post('/evaluaciones/inicial/:postulacion_id', async (req: Request, res: R
       );
     }
 
+    await Promise.all([
+      cacheService.delByPrefix('evaluaciones:'),
+      cacheService.delByPrefix('postulantes:'),
+    ]);
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'EVALUATION_INITIAL',
+      module: 'evaluaciones',
+      status: 'success',
+      details: `Evaluación inicial de postulación ${postulacion_id} registrada como ${estado}`,
+    }).catch(() => {});
+
     res.json({
       message: `Evaluación inicial registrada con éxito (${estado})`,
       etapa: updatedStage[0],
@@ -1922,7 +2336,28 @@ router.get('/evaluaciones/tecnica/metricas', async (_req: Request, res: Response
 // KIR-67: Consulta y listado de postulaciones para Socio Territorial en etapa técnica
 router.get('/evaluaciones/tecnica', async (req: Request, res: Response) => {
   try {
-    const { estado, proyecto_id, q } = req.query;
+    const { estado, proyecto_id, q, categoria, puntaje_min, puntaje_max, ordenar } = req.query;
+    const scoreRange = validateScoreRange(puntaje_min, puntaje_max, 100);
+    if (!scoreRange.ok) {
+      return res.status(400).json({ error: scoreRange.error });
+    }
+    const cleanCategoria = normalizeCategoryFilter(categoria);
+    const cleanSort = normalizeSortOrder(ordenar, EVALUATION_SORT_OPTIONS, 'recientes');
+    const cacheKey = buildCacheKey('evaluaciones:tecnica', {
+      estado,
+      proyecto_id,
+      q,
+      categoria: cleanCategoria,
+      puntaje_min: scoreRange.min,
+      puntaje_max: scoreRange.max,
+      ordenar: cleanSort,
+    });
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
 
     let sql = `
       SELECT ee.id as etapa_id,
@@ -2042,7 +2477,17 @@ router.get('/evaluaciones/tecnica', async (req: Request, res: Response) => {
       };
     });
 
-    res.json(formatted);
+    const finalRows = filterAndSortEvaluationItems(formatted, {
+      categoria: cleanCategoria,
+      puntajeMin: scoreRange.min,
+      puntajeMax: scoreRange.max,
+      ordenar: cleanSort,
+    });
+
+    await cacheService.set(cacheKey, finalRows, 45);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+    res.json(finalRows);
   } catch (err: any) {
     console.error('Error fetching technical evaluations:', err);
     res.status(500).json({ error: 'Error al consultar evaluaciones técnicas' });
@@ -2151,6 +2596,18 @@ router.post('/evaluaciones/tecnica/:postulacion_id', async (req: Request, res: R
       );
     }
 
+    await Promise.all([
+      cacheService.delByPrefix('evaluaciones:'),
+      cacheService.delByPrefix('postulantes:'),
+    ]);
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'EVALUATION_TECHNICAL',
+      module: 'evaluaciones',
+      status: 'success',
+      details: `Evaluación técnica de postulación ${postulacion_id} registrada como ${estado}`,
+    }).catch(() => {});
+
     res.json({
       message: `Evaluación técnica registrada con éxito (${estado})`,
       etapa: updatedStage[0],
@@ -2219,7 +2676,28 @@ router.get(
   requirePermission('applications.read'),
   async (req: Request, res: Response) => {
     try {
-      const { estado, proyecto_id, q } = req.query;
+      const { estado, proyecto_id, q, categoria, puntaje_min, puntaje_max, ordenar } = req.query;
+      const scoreRange = validateScoreRange(puntaje_min, puntaje_max, 100);
+      if (!scoreRange.ok) {
+        return res.status(400).json({ error: scoreRange.error });
+      }
+      const cleanCategoria = normalizeCategoryFilter(categoria);
+      const cleanSort = normalizeSortOrder(ordenar, EVALUATION_SORT_OPTIONS, 'recientes');
+      const cacheKey = buildCacheKey('evaluaciones:salud', {
+        estado,
+        proyecto_id,
+        q,
+        categoria: cleanCategoria,
+        puntaje_min: scoreRange.min,
+        puntaje_max: scoreRange.max,
+        ordenar: cleanSort,
+      });
+      const cached = await cacheService.get<any[]>(cacheKey);
+      if (cached) {
+        res.setHeader('X-Cache', 'HIT');
+        res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+        return res.json(cached);
+      }
 
       let sql = `
         SELECT ee.id as etapa_id,
@@ -2343,7 +2821,17 @@ router.get(
         };
       });
 
-      res.json(formatted);
+      const finalRows = filterAndSortEvaluationItems(formatted, {
+        categoria: cleanCategoria,
+        puntajeMin: scoreRange.min,
+        puntajeMax: scoreRange.max,
+        ordenar: cleanSort,
+      });
+
+      await cacheService.set(cacheKey, finalRows, 45);
+      res.setHeader('X-Cache', 'MISS');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      res.json(finalRows);
     } catch (err: any) {
       console.error('Error fetching health evaluations:', err);
       res.status(500).json({ error: 'Error al consultar evaluaciones de salud física y psicológica' });
@@ -2462,6 +2950,18 @@ router.post(
         );
       }
 
+      await Promise.all([
+        cacheService.delByPrefix('evaluaciones:'),
+        cacheService.delByPrefix('postulantes:'),
+      ]);
+      await recordSystemLog({
+        ...getActorMeta(req),
+        action: 'EVALUATION_HEALTH',
+        module: 'evaluaciones',
+        status: 'success',
+        details: `Evaluación de salud de postulación ${postulacion_id} registrada como ${estado}`,
+      }).catch(() => {});
+
       res.json({
         message: `Evaluación de salud física y psicológica registrada con éxito (${estado})`,
         etapa: updatedStage[0],
@@ -2479,7 +2979,28 @@ router.post(
 // KIR-63: Consulta de postulaciones listas para la entrevista personal.
 router.get('/evaluaciones/personal', async (req: Request, res: Response) => {
   try {
-    const { estado, proyecto_id, q } = req.query;
+    const { estado, proyecto_id, q, categoria, puntaje_min, puntaje_max, ordenar } = req.query;
+    const scoreRange = validateScoreRange(puntaje_min, puntaje_max, 100);
+    if (!scoreRange.ok) {
+      return res.status(400).json({ error: scoreRange.error });
+    }
+    const cleanCategoria = normalizeCategoryFilter(categoria);
+    const cleanSort = normalizeSortOrder(ordenar, EVALUATION_SORT_OPTIONS, 'recientes');
+    const cacheKey = buildCacheKey('evaluaciones:personal', {
+      estado,
+      proyecto_id,
+      q,
+      categoria: cleanCategoria,
+      puntaje_min: scoreRange.min,
+      puntaje_max: scoreRange.max,
+      ordenar: cleanSort,
+    });
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
     let sql = `
       SELECT ee.id AS etapa_id, ee.postulacion_id, ee.estado AS etapa_estado,
              ee.evaluador, ee.comentarios, ee.fecha_evaluacion, ee.detalle_criterios_personales,
@@ -2563,7 +3084,17 @@ router.get('/evaluaciones/personal', async (req: Request, res: Response) => {
         },
       };
     });
-    res.json(formatted);
+    const finalRows = filterAndSortEvaluationItems(formatted, {
+      categoria: cleanCategoria,
+      puntajeMin: scoreRange.min,
+      puntajeMax: scoreRange.max,
+      ordenar: cleanSort,
+    });
+
+    await cacheService.set(cacheKey, finalRows, 45);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+    res.json(finalRows);
   } catch (err: any) {
     console.error('Error fetching personal evaluations:', err);
     res.status(500).json({ error: 'Error al consultar evaluaciones personales' });
@@ -2628,6 +3159,18 @@ router.post('/evaluaciones/personal/:postulacion_id', async (req: Request, res: 
       await query(`UPDATE postulaciones SET estado_general = 'en_proceso', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
     }
 
+    await Promise.all([
+      cacheService.delByPrefix('evaluaciones:'),
+      cacheService.delByPrefix('postulantes:'),
+    ]);
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'EVALUATION_PERSONAL',
+      module: 'evaluaciones',
+      status: 'success',
+      details: `Entrevista personal de postulación ${postulacion_id} registrada como ${estado} (promedio ${scoreAverage}/5)`,
+    }).catch(() => {});
+
     res.json({
       message: `Evaluación personal registrada (${estado})`,
       etapa: updated[0],
@@ -2644,7 +3187,28 @@ router.post('/evaluaciones/personal/:postulacion_id', async (req: Request, res: 
 // KIR-59: Consulta de postulaciones en la evaluación por competencias.
 router.get('/evaluaciones/competencias', async (req: Request, res: Response) => {
   try {
-    const { estado, proyecto_id, q } = req.query;
+    const { estado, proyecto_id, q, categoria, puntaje_min, puntaje_max, ordenar } = req.query;
+    const scoreRange = validateScoreRange(puntaje_min, puntaje_max, 100);
+    if (!scoreRange.ok) {
+      return res.status(400).json({ error: scoreRange.error });
+    }
+    const cleanCategoria = normalizeCategoryFilter(categoria);
+    const cleanSort = normalizeSortOrder(ordenar, EVALUATION_SORT_OPTIONS, 'recientes');
+    const cacheKey = buildCacheKey('evaluaciones:competencias', {
+      estado,
+      proyecto_id,
+      q,
+      categoria: cleanCategoria,
+      puntaje_min: scoreRange.min,
+      puntaje_max: scoreRange.max,
+      ordenar: cleanSort,
+    });
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
     let sql = `
       SELECT ee.id AS etapa_id, ee.postulacion_id, ee.estado AS etapa_estado,
              ee.evaluador, ee.comentarios, ee.fecha_evaluacion, ee.detalle_criterios,
@@ -2729,7 +3293,17 @@ router.get('/evaluaciones/competencias', async (req: Request, res: Response) => 
         },
       };
     });
-    res.json(formatted);
+    const finalRows = filterAndSortEvaluationItems(formatted, {
+      categoria: cleanCategoria,
+      puntajeMin: scoreRange.min,
+      puntajeMax: scoreRange.max,
+      ordenar: cleanSort,
+    });
+
+    await cacheService.set(cacheKey, finalRows, 45);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+    res.json(finalRows);
   } catch (err: any) {
     console.error('Error fetching competency evaluations:', err);
     res.status(500).json({ error: 'Error al consultar evaluaciones por competencias' });
@@ -2795,6 +3369,18 @@ router.post('/evaluaciones/competencias/:postulacion_id', async (req: Request, r
     } else if (estado === 'observado') {
       await query(`UPDATE postulaciones SET estado_general = 'en_proceso', updated_at = NOW() WHERE id = $1`, [postulacion_id]);
     }
+
+    await Promise.all([
+      cacheService.delByPrefix('evaluaciones:'),
+      cacheService.delByPrefix('postulantes:'),
+    ]);
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'EVALUATION_COMPETENCY',
+      module: 'evaluaciones',
+      status: 'success',
+      details: `Evaluación por competencias de postulación ${postulacion_id} registrada como ${estado} (promedio ${scoreAverage}/5)`,
+    }).catch(() => {});
 
     res.json({
       message: `Evaluación por competencias registrada (${estado})`,
@@ -2891,6 +3477,18 @@ router.patch('/evaluaciones/:id', async (req: Request, res: Response) => {
       );
     }
 
+    await Promise.all([
+      cacheService.delByPrefix('evaluaciones:'),
+      cacheService.delByPrefix('postulantes:'),
+    ]);
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'EVALUATION_STAGE_UPDATE',
+      module: 'evaluaciones',
+      status: 'success',
+      details: `Etapa ${etapa.etapa} (ID ${id}) actualizada a ${estado}`,
+    }).catch(() => {});
+
     res.json(etapa);
   } catch (err: any) {
     console.error('Error updating etapa:', err);
@@ -2917,6 +3515,17 @@ const handleReasignacion = async (req: Request, res: Response) => {
          RETURNING *`,
         [nuevo_proyecto_id, id]
       );
+      await Promise.all([
+        cacheService.delByPrefix('postulantes:'),
+        cacheService.delByPrefix('evaluaciones:'),
+      ]);
+      await recordSystemLog({
+        ...getActorMeta(req),
+        action: 'APPLICATION_REASSIGN',
+        module: 'postulaciones',
+        status: 'success',
+        details: `Postulación ${id} reasignada al proyecto ${nuevo_proyecto_id}`,
+      }).catch(() => {});
       return res.json(rows[0]);
     } else {
       const rows = await query(
@@ -2928,6 +3537,17 @@ const handleReasignacion = async (req: Request, res: Response) => {
          RETURNING *`,
         [isReassigned, id]
       );
+      await Promise.all([
+        cacheService.delByPrefix('postulantes:'),
+        cacheService.delByPrefix('evaluaciones:'),
+      ]);
+      await recordSystemLog({
+        ...getActorMeta(req),
+        action: 'APPLICATION_REASSIGN',
+        module: 'postulaciones',
+        status: 'success',
+        details: `Postulación ${id} marcada con reasignación=${Boolean(isReassigned)}`,
+      }).catch(() => {});
       return res.json(rows[0]);
     }
   } catch (err: any) {
@@ -2960,6 +3580,18 @@ router.patch('/postulaciones/:id/status', async (req: Request, res: Response) =>
     if (!rows.length) {
       return res.status(404).json({ error: 'Postulación no encontrada' });
     }
+
+    await Promise.all([
+      cacheService.delByPrefix('postulantes:'),
+      cacheService.delByPrefix('evaluaciones:'),
+    ]);
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'APPLICATION_STATUS_UPDATE',
+      module: 'postulaciones',
+      status: 'success',
+      details: `Estado general de postulación ${id} cambiado a ${estado_general}`,
+    }).catch(() => {});
 
     res.json(rows[0]);
   } catch (err: any) {
@@ -3055,8 +3687,63 @@ router.get('/donaciones/historial', async (req: Request, res: Response) => {
       return res.status(400).json({ error: parsed.error });
     }
 
+    const priceRange = validatePriceRange(
+      req.query.monto_min ?? req.query.precio_min,
+      req.query.monto_max ?? req.query.precio_max
+    );
+    if (!priceRange.ok) {
+      return res.status(400).json({ error: priceRange.error });
+    }
+
+    const cleanCategoria = normalizeCategoryFilter(req.query.categoria);
+    const cleanSort = normalizeSortOrder(req.query.ordenar, DONATION_SORT_OPTIONS, 'recientes');
     const { filters } = parsed;
+
+    const cacheKey = buildCacheKey('donaciones:historial', {
+      ...filters,
+      categoria: cleanCategoria,
+      monto_min: priceRange.min,
+      monto_max: priceRange.max,
+      ordenar: cleanSort,
+    });
+    const cached = await cacheService.get<any>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
+
     const { whereSql, params } = buildDonationHistoryConditions(filters);
+    const extraClauses: string[] = [];
+    const queryParams: any[] = [...params];
+
+    if (cleanCategoria) {
+      queryParams.push(cleanCategoria);
+      extraClauses.push(`LOWER(COALESCE(d.categoria_especie, '')) = LOWER($${queryParams.length})`);
+    }
+    if (priceRange.min !== null) {
+      queryParams.push(priceRange.min);
+      extraClauses.push(`COALESCE(d.monto_bob, 0) >= $${queryParams.length}`);
+    }
+    if (priceRange.max !== null) {
+      queryParams.push(priceRange.max);
+      extraClauses.push(`COALESCE(d.monto_bob, 0) <= $${queryParams.length}`);
+    }
+
+    const combinedWhere =
+      extraClauses.length > 0
+        ? whereSql
+          ? `${whereSql} AND ${extraClauses.join(' AND ')}`
+          : `WHERE ${extraClauses.join(' AND ')}`
+        : whereSql;
+
+    const orderByMap: Record<string, string> = {
+      recientes: 'd.fecha_recepcion DESC, d.id DESC',
+      monto_desc: 'COALESCE(d.monto_bob, 0) DESC, d.fecha_recepcion DESC',
+      monto_asc: 'COALESCE(d.monto_bob, 0) ASC, d.fecha_recepcion DESC',
+      donante_asc: 'd.donante_nombre ASC, d.fecha_recepcion DESC',
+    };
+    const orderBy = orderByMap[cleanSort] || orderByMap.recientes;
 
     const summaryRows = await query<any>(
       `SELECT COUNT(*)::int AS total,
@@ -3064,12 +3751,12 @@ router.get('/donaciones/historial', async (req: Request, res: Response) => {
               COUNT(*) FILTER (WHERE d.tipo_donacion = 'especie')::int AS aportes_especie
        FROM donaciones d
        LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
-       ${whereSql}`,
-      params
+       ${combinedWhere}`,
+      queryParams
     );
 
-    const limitPlaceholder = `$${params.length + 1}`;
-    const offsetPlaceholder = `$${params.length + 2}`;
+    const limitPlaceholder = `$${queryParams.length + 1}`;
+    const offsetPlaceholder = `$${queryParams.length + 2}`;
 
     const rows = await query<DonationHistoryRow>(
       `SELECT d.id,
@@ -3086,16 +3773,16 @@ router.get('/donaciones/historial', async (req: Request, res: Response) => {
               p.ubicacion AS proyecto_ubicacion
        FROM donaciones d
        LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
-       ${whereSql}
-       ORDER BY d.fecha_recepcion DESC, d.id DESC
+       ${combinedWhere}
+       ORDER BY ${orderBy}
        LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
-      [...params, filters.limite, (filters.pagina - 1) * filters.limite]
+      [...queryParams, filters.limite, (filters.pagina - 1) * filters.limite]
     );
 
     const summary = summaryRows[0] || { total: 0, monto_economico_bob: 0, aportes_especie: 0 };
     const total = Number(summary.total);
 
-    res.json({
+    const payload = {
       items: rows.map(toDonationHistoryItem),
       resumen: {
         total_aportes: total,
@@ -3107,7 +3794,12 @@ router.get('/donaciones/historial', async (req: Request, res: Response) => {
         limite: filters.limite,
         paginas: Math.ceil(total / filters.limite),
       },
-    });
+    };
+
+    await cacheService.set(cacheKey, payload, 45);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+    res.json(payload);
   } catch (err: any) {
     console.error('Error fetching donation history:', err);
     res.status(500).json({ error: 'Error al consultar el historial de donaciones' });
@@ -3122,6 +3814,32 @@ router.get('/donaciones', async (req: Request, res: Response) => {
       typeof req.query.estado_entrega === 'string' ? req.query.estado_entrega.trim() : '';
     const origenFilter =
       typeof req.query.origen === 'string' ? req.query.origen.trim() : '';
+    const cleanCategoria = normalizeCategoryFilter(req.query.categoria);
+    const cleanSort = normalizeSortOrder(req.query.ordenar, DONATION_SORT_OPTIONS, 'recientes');
+    const priceRange = validatePriceRange(
+      req.query.monto_min ?? req.query.precio_min,
+      req.query.monto_max ?? req.query.precio_max
+    );
+    if (!priceRange.ok) {
+      return res.status(400).json({ error: priceRange.error });
+    }
+
+    const cacheKey = buildCacheKey('donaciones:list', {
+      q: search,
+      tipo: tipoFilter,
+      estado_entrega: estadoEntregaFilter,
+      origen: origenFilter,
+      categoria: cleanCategoria,
+      monto_min: priceRange.min,
+      monto_max: priceRange.max,
+      ordenar: cleanSort,
+    });
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
 
     const conditions: string[] = [];
     const params: any[] = [];
@@ -3268,7 +3986,17 @@ router.get('/donaciones', async (req: Request, res: Response) => {
       };
     });
 
-    res.json(formatted);
+    const filteredAndSorted = filterAndSortDonations(formatted, {
+      categoria: cleanCategoria,
+      montoMin: priceRange.min,
+      montoMax: priceRange.max,
+      ordenar: cleanSort,
+    });
+
+    await cacheService.set(cacheKey, filteredAndSorted, 45);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+    res.json(filteredAndSorted);
   } catch (err: any) {
     console.error('Error fetching donaciones:', err);
     res.status(500).json({ error: 'Error al consultar donaciones' });
@@ -3526,6 +4254,18 @@ router.post('/donaciones', async (req: Request, res: Response) => {
 
     await client.query('COMMIT');
 
+    await Promise.all([
+      cacheService.delByPrefix('donaciones:'),
+      cacheService.delByPrefix('necesidades:'),
+    ]);
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'DONATION_CREATE',
+      module: 'donaciones',
+      status: 'success',
+      details: `Donación ${codigoDonacion} (${tipo_donacion}) registrada de ${cleanNombre}`,
+    }).catch(() => {});
+
     const row = updatedDon.rows[0];
     res.status(201).json({
       ...row,
@@ -3682,6 +4422,18 @@ router.post('/donaciones/ofrecer', async (req: Request, res: Response) => {
 
     await client.query('COMMIT');
 
+    await Promise.all([
+      cacheService.delByPrefix('donaciones:'),
+      cacheService.delByPrefix('necesidades:'),
+    ]);
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'DONATION_OFFER',
+      module: 'donaciones',
+      status: 'success',
+      details: `Oferta de donación ${codigoDonacion} (${v.tipo_donacion}) registrada`,
+    }).catch(() => {});
+
     const row = updatedDon.rows[0];
     res.status(201).json({
       message: `¡Gracias! Tu donación ofrecida fue registrada con el código ${codigoDonacion}. Nuestro equipo coordinará la recepción según la modalidad elegida.`,
@@ -3757,6 +4509,15 @@ router.patch('/donaciones/:id/confirmar-recepcion', async (req: Request, res: Re
        RETURNING *`,
       [recibidoPor, notasRecepcion, donacionId]
     );
+
+    await cacheService.delByPrefix('donaciones:');
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'DONATION_CONFIRM_RECEIPT',
+      module: 'donaciones',
+      status: 'success',
+      details: `Recepción de donación ${donacionId} confirmada por ${recibidoPor}`,
+    }).catch(() => {});
 
     const row = updated[0];
     res.json({
@@ -3960,6 +4721,15 @@ router.post('/donaciones/:id/entregas', async (req: Request, res: Response) => {
 
     await client.query('COMMIT');
 
+    await cacheService.delByPrefix('donaciones:');
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'DONATION_DELIVERY_CREATE',
+      module: 'donaciones',
+      status: 'success',
+      details: `Entrega ${codigoEntrega} registrada para donación ${donacionId}`,
+    }).catch(() => {});
+
     res.status(201).json({
       message: 'Entrega registrada y vínculo donante-receptor trazado correctamente',
       entrega: mapEntregaRow(enrichedEntregaRes.rows[0]),
@@ -4074,6 +4844,15 @@ router.patch('/donaciones/entregas/:entregaId', async (req: Request, res: Respon
 
     await client.query('COMMIT');
 
+    await cacheService.delByPrefix('donaciones:');
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'DONATION_DELIVERY_STATUS',
+      module: 'donaciones',
+      status: 'success',
+      details: `Entrega ${entregaId} actualizada a estado ${nextState}`,
+    }).catch(() => {});
+
     res.json({
       message: 'Estado de entrega actualizado correctamente',
       entrega: mapEntregaRow(enrichedEntregaRes.rows[0]),
@@ -4089,8 +4868,37 @@ router.patch('/donaciones/entregas/:entregaId', async (req: Request, res: Respon
 });
 
 // KIR-31 (KIR-43): Listar y registrar necesidades de donación vinculadas a su receptor
-router.get('/necesidades-donacion', async (_req: Request, res: Response) => {
+router.get('/necesidades-donacion', async (req: Request, res: Response) => {
   try {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const tipo = normalizeCategoryFilter(req.query.tipo || req.query.categoria).toLowerCase();
+    const priceRange = validatePriceRange(
+      req.query.monto_min ?? req.query.precio_min,
+      req.query.monto_max ?? req.query.precio_max
+    );
+    if (!priceRange.ok) {
+      return res.status(400).json({ error: priceRange.error });
+    }
+    const cleanSort = normalizeSortOrder(
+      req.query.ordenar,
+      ['recientes', 'monto_desc', 'monto_asc', 'titulo_asc'] as const,
+      'recientes'
+    );
+
+    const cacheKey = buildCacheKey('necesidades:list', {
+      q,
+      tipo,
+      monto_min: priceRange.min,
+      monto_max: priceRange.max,
+      ordenar: cleanSort,
+    });
+    const cached = await cacheService.get<any[]>(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+      return res.json(cached);
+    }
+
     const rows = await query(
       `SELECT n.*,
               json_build_object(
@@ -4114,13 +4922,40 @@ router.get('/necesidades-donacion', async (_req: Request, res: Response) => {
        LIMIT 100`
     );
 
-    res.json(
-      rows.map((row: any) => ({
+    const formatted = rows
+      .map((row: any) => ({
         ...row,
         monto_objetivo: row.monto_objetivo !== null && row.monto_objetivo !== undefined ? Number(row.monto_objetivo) : null,
         cantidad_objetivo: row.cantidad_objetivo !== null && row.cantidad_objetivo !== undefined ? Number(row.cantidad_objetivo) : null,
       }))
-    );
+      .filter((item: any) => {
+        if (tipo && String(item.tipo_necesidad || '').toLowerCase() !== tipo) return false;
+        const monto = Number(item.monto_objetivo || 0);
+        if (priceRange.min !== null && monto < priceRange.min) return false;
+        if (priceRange.max !== null && monto > priceRange.max) return false;
+        if (q) {
+          const hay =
+            String(item.titulo || '').toLowerCase().includes(q.toLowerCase()) ||
+            String(item.descripcion || '').toLowerCase().includes(q.toLowerCase()) ||
+            String(item.receptor?.nombre || '').toLowerCase().includes(q.toLowerCase()) ||
+            String(item.receptor?.organizacion || '').toLowerCase().includes(q.toLowerCase());
+          if (!hay) return false;
+        }
+        return true;
+      });
+
+    if (cleanSort === 'monto_desc') {
+      formatted.sort((a: any, b: any) => Number(b.monto_objetivo || 0) - Number(a.monto_objetivo || 0));
+    } else if (cleanSort === 'monto_asc') {
+      formatted.sort((a: any, b: any) => Number(a.monto_objetivo || 0) - Number(b.monto_objetivo || 0));
+    } else if (cleanSort === 'titulo_asc') {
+      formatted.sort((a: any, b: any) => String(a.titulo || '').localeCompare(String(b.titulo || ''), 'es'));
+    }
+
+    await cacheService.set(cacheKey, formatted, 45);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('X-Cache-Backend', cacheService.getStats().backend);
+    res.json(formatted);
   } catch (err: any) {
     console.error('Error fetching donation needs:', err);
     res.status(500).json({ error: 'Error al consultar las necesidades de donación' });
@@ -4202,6 +5037,15 @@ router.post('/necesidades-donacion', async (req: Request, res: Response) => {
     );
 
     const created = rows[0];
+    await cacheService.delByPrefix('necesidades:');
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'DONATION_NEED_CREATE',
+      module: 'necesidades-donacion',
+      status: 'success',
+      details: `Necesidad "${created.titulo}" registrada (${created.tipo_necesidad})`,
+    }).catch(() => {});
+
     res.status(201).json({
       ...created,
       monto_objetivo: created.monto_objetivo !== null && created.monto_objetivo !== undefined ? Number(created.monto_objetivo) : null,
@@ -4380,6 +5224,14 @@ router.post('/roles/users', authenticate, requirePermission('users.manage_roles'
       // Ignorar si public.usuarios tiene otro formato
     }
 
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'ROLE_USER_CREATE',
+      module: 'roles',
+      status: 'success',
+      details: `Usuario ${createdEmail} registrado con rol ID ${roleId}`,
+    }).catch(() => {});
+
     res.status(201).json({
       id: createdUserId,
       email: createdEmail,
@@ -4426,6 +5278,13 @@ router.post('/roles', authenticate, requirePermission('roles.manage'), async (re
        SELECT $1, id FROM permissions WHERE code = ANY($2::text[]) ON CONFLICT DO NOTHING`,
       [role.id, permission_codes]
     );
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'ROLE_CREATE',
+      module: 'roles',
+      status: 'success',
+      details: `Rol "${code}" creado con ${permission_codes.length} permisos`,
+    }).catch(() => {});
     res.status(201).json({ id: role.id, code, name: name.trim() });
   } catch (error: any) {
     if (error.code === '23505') return res.status(409).json({ error: 'Ya existe un rol con ese código' });
@@ -4452,6 +5311,13 @@ router.patch('/roles/:id', authenticate, requirePermission('roles.manage'), asyn
        SELECT $1, id FROM permissions WHERE code = ANY($2::text[]) ON CONFLICT DO NOTHING`,
       [roleId, permission_codes]
     );
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'ROLE_UPDATE',
+      module: 'roles',
+      status: 'success',
+      details: `Rol ID ${roleId} (${name.trim()}) actualizado (${permission_codes.length} permisos)`,
+    }).catch(() => {});
     res.json({ message: 'Rol actualizado' });
   } catch (error) {
     console.error('Error actualizando rol:', error);
@@ -4503,6 +5369,14 @@ router.put('/roles/users/:userId', authenticate, requirePermission('users.manage
     } catch (pubErr) {
       console.warn('Error updating public.usuarios:', pubErr);
     }
+
+    await recordSystemLog({
+      ...getActorMeta(req),
+      action: 'ROLE_ASSIGN',
+      module: 'roles',
+      status: 'success',
+      details: `Rol "${role[0].code}" asignado a ${user[0].email}`,
+    }).catch(() => {});
 
     res.json({ message: `Rol "${role[0].name}" asignado correctamente al usuario ${user[0].email}` });
   } catch (error) {
@@ -4585,5 +5459,585 @@ router.post('/imagenes', authenticate, requirePermission('projects.review'), asy
     res.status(500).json({ error: 'Error al almacenar imagen en base de datos' });
   }
 });
+
+// -------------------------------------------------------------
+// 7. CACHÉ, AUDITORÍA Y REPORTES EXPORTABLES POR ROL (SPRINT 1 CORRECCIONES)
+// -------------------------------------------------------------
+router.get('/cache/stats', authenticate, requirePermission('audit.read'), (_req: Request, res: Response) => {
+  res.json(cacheService.getStats());
+});
+
+router.get('/logs', authenticate, requirePermission('audit.read'), async (req: Request, res: Response) => {
+  try {
+    const sortAllowed = ['recientes', 'antiguos', 'duracion_desc', 'tamano_desc'] as const;
+    const ordenar = normalizeSortOrder(req.query.ordenar, sortAllowed, 'recientes');
+    const data = await querySystemLogs({
+      module: typeof req.query.module === 'string' ? req.query.module : undefined,
+      action: typeof req.query.action === 'string' ? req.query.action : undefined,
+      status: typeof req.query.status === 'string' ? req.query.status : undefined,
+      q: typeof req.query.q === 'string' ? req.query.q : undefined,
+      fecha_desde: typeof req.query.fecha_desde === 'string' ? req.query.fecha_desde : undefined,
+      fecha_hasta: typeof req.query.fecha_hasta === 'string' ? req.query.fecha_hasta : undefined,
+      ordenar,
+      pagina: req.query.pagina ? Number(req.query.pagina) : 1,
+      limite: req.query.limite ? Number(req.query.limite) : 25,
+    });
+    res.json(data);
+  } catch (err: any) {
+    console.error('Error fetching system logs:', err);
+    res.status(500).json({ error: 'Error al consultar los logs del sistema' });
+  }
+});
+
+const EXPORT_MODULES = [
+  'catalogo',
+  'proyectos',
+  'proyectos-seguimiento',
+  'postulaciones-seguimiento',
+  'donaciones',
+  'historial-donaciones',
+  'necesidades-donacion',
+  'postulantes',
+  'evaluacion-inicial',
+  'evaluacion-tecnica',
+  'evaluacion-personal',
+  'evaluacion-competencias',
+  'evaluacion-salud',
+  'roles',
+  'logs',
+] as const;
+
+router.get(
+  '/exports/:modulo',
+  authenticate,
+  requirePermission('reports.export'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    const startMs = Date.now();
+    const modulo = String(req.params.modulo || '').trim().toLowerCase();
+
+    if (!EXPORT_MODULES.includes(modulo as any)) {
+      return res.status(400).json({ error: `Módulo exportable no reconocido: ${modulo}` });
+    }
+
+    const extraPermissionMap: Record<string, string> = {
+      'evaluacion-salud': 'applications.read',
+      roles: 'roles.manage',
+      logs: 'audit.read',
+    };
+    const requiredExtra = extraPermissionMap[modulo];
+    if (requiredExtra && !hasPermission(req.userId, req.permissions, requiredExtra)) {
+      await recordSystemLog({
+        ...getActorMeta(req),
+        action: 'EXPORT_DENIED',
+        module: modulo,
+        format: 'csv',
+        duration_ms: Date.now() - startMs,
+        filters_json: req.query as Record<string, unknown>,
+        status: 'denied',
+        details: `Exportación denegada por falta de permiso ${requiredExtra}`,
+      }).catch(() => {});
+      return res.status(403).json({ error: `No tienes permiso (${requiredExtra}) para exportar ${modulo}` });
+    }
+
+    try {
+      let csvResult: { csv: string; sizeBytes: number; rowCount: number };
+
+      if (modulo === 'catalogo' || modulo === 'proyectos') {
+        const quotaRange = validateQuotaRange(req.query.cupos_min, req.query.cupos_max);
+        if (!quotaRange.ok) return res.status(400).json({ error: quotaRange.error });
+
+        const cleanCategoria = normalizeCategoryFilter(req.query.categoria);
+        const cleanSort = normalizeSortOrder(req.query.ordenar, PROJECT_SORT_OPTIONS, 'recientes');
+        const estado = modulo === 'catalogo' ? 'aprobado' : normalizeCategoryFilter(req.query.estado);
+        const publicado = modulo === 'catalogo' ? 'true' : normalizeCategoryFilter(req.query.publicado);
+        const ubicacion = typeof req.query.ubicacion === 'string' ? req.query.ubicacion.trim() : '';
+        const orgId = typeof req.query.organizacion_id === 'string' ? req.query.organizacion_id.trim() : '';
+        const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+
+        let sql = `
+          SELECT p.*, o.nombre AS organizacion_nombre, o.tipo AS organizacion_tipo
+          FROM proyectos p
+          LEFT JOIN organizaciones o ON p.organizacion_id = o.id
+          WHERE 1=1
+        `;
+        const params: any[] = [];
+        if (estado) {
+          params.push(estado);
+          sql += ` AND p.estado = $${params.length}`;
+        }
+        if (publicado === 'true' || publicado === 'false') {
+          params.push(publicado === 'true');
+          sql += ` AND p.publicado = $${params.length}`;
+        }
+        if (ubicacion) {
+          params.push(`%${ubicacion}%`);
+          sql += ` AND p.ubicacion ILIKE $${params.length}`;
+        }
+        if (orgId) {
+          params.push(orgId);
+          sql += ` AND p.organizacion_id = $${params.length}`;
+        }
+        if (cleanCategoria) {
+          params.push(cleanCategoria);
+          sql += ` AND LOWER(COALESCE(o.tipo, '')) = LOWER($${params.length})`;
+        }
+        if (quotaRange.min !== null) {
+          params.push(quotaRange.min);
+          sql += ` AND p.cupos_disponibles >= $${params.length}`;
+        }
+        if (quotaRange.max !== null) {
+          params.push(quotaRange.max);
+          sql += ` AND p.cupos_disponibles <= $${params.length}`;
+        }
+        if (q) {
+          params.push(`%${q}%`);
+          sql += ` AND (p.titulo ILIKE $${params.length} OR p.descripcion ILIKE $${params.length} OR p.ubicacion ILIKE $${params.length})`;
+        }
+        sql += ' ORDER BY p.created_at DESC';
+
+        const rows = await query<any>(sql, params);
+        const sorted = filterAndSortProjects(rows, {
+          categoria: cleanCategoria,
+          cuposMin: quotaRange.min,
+          cuposMax: quotaRange.max,
+          ordenar: cleanSort,
+        });
+        const columns: CsvColumn<any>[] = [
+          { header: 'ID', value: (r) => r.id },
+          { header: 'Título', value: (r) => r.titulo },
+          { header: 'Organización', value: (r) => r.organizacion_nombre || '' },
+          { header: 'Categoría', value: (r) => r.organizacion_tipo || '' },
+          { header: 'Ubicación', value: (r) => r.ubicacion },
+          { header: 'Cupos Disponibles', value: (r) => r.cupos_disponibles },
+          { header: 'Mayor de Edad (+18)', value: (r) => (r.es_mayor_edad ? 'Sí' : 'No') },
+          { header: 'Estado', value: (r) => r.estado },
+          { header: 'Publicado', value: (r) => (r.publicado ? 'Sí' : 'No') },
+          { header: 'Fecha Creación', value: (r) => r.created_at },
+        ];
+        csvResult = buildCsvReport(columns, sorted);
+      } else if (modulo === 'proyectos-seguimiento') {
+        const quotaRange = validateQuotaRange(req.query.cupos_min, req.query.cupos_max);
+        if (!quotaRange.ok) return res.status(400).json({ error: quotaRange.error });
+        const busqueda = typeof req.query.busqueda === 'string' ? req.query.busqueda.trim() : '';
+        const estadoFilter = normalizeCategoryFilter(req.query.estado);
+        const cleanSort = normalizeSortOrder(req.query.ordenar, PROJECT_SORT_OPTIONS, 'recientes');
+
+        const params: any[] = [];
+        let sql = `
+          SELECT p.id, p.titulo, p.ubicacion, p.cupos_disponibles, p.estado,
+                 COALESCE(p.publicado, false) AS publicado, p.motivo_rechazo, p.created_at,
+                 o.nombre AS organizacion_nombre, o.tipo AS organizacion_tipo, o.contacto_email
+          FROM proyectos p
+          JOIN organizaciones o ON o.id = p.organizacion_id
+          WHERE 1=1
+        `;
+        if (busqueda) {
+          params.push(busqueda);
+          sql += ` AND LOWER(TRIM(o.contacto_email)) = LOWER($${params.length})`;
+        }
+        const rows = await query<any>(sql, params);
+        const filteredState = estadoFilter
+          ? rows.filter((r) => String(r.estado || '').toLowerCase() === estadoFilter.toLowerCase())
+          : rows;
+        const sorted = filterAndSortProjects(filteredState, {
+          cuposMin: quotaRange.min,
+          cuposMax: quotaRange.max,
+          ordenar: cleanSort,
+        });
+        csvResult = buildCsvReport(
+          [
+            { header: 'ID', value: (r) => r.id },
+            { header: 'Proyecto', value: (r) => r.titulo },
+            { header: 'Organización', value: (r) => r.organizacion_nombre },
+            { header: 'Correo Organización', value: (r) => r.contacto_email || '' },
+            { header: 'Ubicación', value: (r) => r.ubicacion },
+            { header: 'Cupos', value: (r) => r.cupos_disponibles },
+            { header: 'Estado', value: (r) => r.estado },
+            { header: 'Publicado', value: (r) => (r.publicado ? 'Sí' : 'No') },
+            { header: 'Motivo Rechazo', value: (r) => r.motivo_rechazo || '' },
+          ],
+          sorted
+        );
+      } else if (modulo === 'postulaciones-seguimiento') {
+        const scoreRange = validateScoreRange(req.query.avance_min, req.query.avance_max, 100);
+        if (!scoreRange.ok) return res.status(400).json({ error: scoreRange.error });
+        const term = typeof req.query.busqueda === 'string' ? req.query.busqueda.trim() : '';
+        const estadoFilter = normalizeCategoryFilter(req.query.estado).toLowerCase();
+        const codeMatch = term.match(/^(?:KIR-?|#)?(\d+)$/i);
+        const trackingId = codeMatch ? parseInt(codeMatch[1], 10) : null;
+
+        const params: any[] = [];
+        let whereSql = '';
+        if (term) {
+          params.push(term, `%${term}%`, trackingId);
+          whereSql = `WHERE (
+            LOWER(TRIM(p.ci)) = LOWER(TRIM($1))
+            OR LOWER(p.email) = LOWER(TRIM($1))
+            OR LOWER(p.nombres || ' ' || p.apellidos) LIKE LOWER($2)
+            OR ($3::int IS NOT NULL AND app.id = $3::int)
+          )`;
+        }
+        const rows = await query<any>(
+          `SELECT app.id AS postulacion_id, app.estado_general, app.es_reasignacion, app.created_at,
+                  p.nombres, p.apellidos, p.ci, p.email, proy.titulo AS proyecto_titulo,
+                  COALESCE((SELECT COUNT(*) FROM evaluaciones_etapas ee WHERE ee.postulacion_id = app.id AND ee.estado = 'aprobado'), 0) AS etapas_aprobadas
+           FROM postulaciones app
+           JOIN postulantes p ON p.id = app.postulante_id
+           JOIN proyectos proy ON proy.id = app.proyecto_id
+           ${whereSql}
+           ORDER BY app.created_at DESC`,
+          params
+        );
+        const mapped = rows
+          .map((r) => ({
+            ...r,
+            porcentaje_avance: Math.round((Number(r.etapas_aprobadas) / 5) * 100),
+          }))
+          .filter((r) => {
+            if (estadoFilter && String(r.estado_general || '').toLowerCase() !== estadoFilter) return false;
+            if (scoreRange.min !== null && r.porcentaje_avance < scoreRange.min) return false;
+            if (scoreRange.max !== null && r.porcentaje_avance > scoreRange.max) return false;
+            return true;
+          });
+        csvResult = buildCsvReport(
+          [
+            { header: 'Código', value: (r) => `KIR-${r.postulacion_id}` },
+            { header: 'Postulante', value: (r) => `${r.nombres} ${r.apellidos}` },
+            { header: 'CI', value: (r) => r.ci },
+            { header: 'Correo', value: (r) => r.email },
+            { header: 'Proyecto', value: (r) => r.proyecto_titulo },
+            { header: 'Estado General', value: (r) => r.estado_general },
+            { header: 'Avance (%)', value: (r) => r.porcentaje_avance },
+            { header: 'Reasignación', value: (r) => (r.es_reasignacion ? 'Sí' : 'No') },
+          ],
+          mapped
+        );
+      } else if (modulo === 'donaciones' || modulo === 'historial-donaciones') {
+        const priceRange = validatePriceRange(
+          req.query.monto_min ?? req.query.precio_min,
+          req.query.monto_max ?? req.query.precio_max
+        );
+        if (!priceRange.ok) return res.status(400).json({ error: priceRange.error });
+        const cleanCategoria = normalizeCategoryFilter(req.query.categoria);
+        const cleanSort = normalizeSortOrder(req.query.ordenar, DONATION_SORT_OPTIONS, 'recientes');
+        const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+        const tipo = normalizeCategoryFilter(req.query.tipo);
+        const estadoEntrega = normalizeCategoryFilter(req.query.estado_entrega);
+
+        const rows = await query<any>(
+          `SELECT d.*, p.titulo AS proyecto_titulo
+           FROM donaciones d
+           LEFT JOIN proyectos p ON p.id = d.proyecto_destino_id
+           ORDER BY d.fecha_recepcion DESC, d.id DESC`
+        );
+        const filtered = filterAndSortDonations(rows, {
+          q,
+          tipo,
+          categoria: cleanCategoria,
+          estado_entrega: estadoEntrega,
+          montoMin: priceRange.min,
+          montoMax: priceRange.max,
+          ordenar: cleanSort,
+        });
+        csvResult = buildCsvReport(
+          [
+            { header: 'Código', value: (r) => r.codigo_donacion || formatDonationCode(r.id) },
+            { header: 'Donante', value: (r) => r.donante_nombre },
+            { header: 'Tipo', value: (r) => r.tipo_donacion },
+            { header: 'Categoría Especie', value: (r) => r.categoria_especie || '' },
+            { header: 'Monto (Bs)', value: (r) => (r.monto_bob !== null ? Number(r.monto_bob) : '') },
+            { header: 'Descripción Especie', value: (r) => r.descripcion_especie || '' },
+            { header: 'Estado Entrega', value: (r) => r.estado_entrega || 'recibida' },
+            { header: 'Proyecto Destino', value: (r) => r.proyecto_titulo || 'Fondo General' },
+            { header: 'Recibido Por', value: (r) => r.recibido_por || '' },
+            { header: 'Fecha Recepción', value: (r) => r.fecha_recepcion },
+          ],
+          filtered
+        );
+      } else if (modulo === 'necesidades-donacion') {
+        const priceRange = validatePriceRange(
+          req.query.monto_min ?? req.query.precio_min,
+          req.query.monto_max ?? req.query.precio_max
+        );
+        if (!priceRange.ok) return res.status(400).json({ error: priceRange.error });
+        const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
+        const tipo = normalizeCategoryFilter(req.query.tipo || req.query.categoria).toLowerCase();
+        const cleanSort = normalizeSortOrder(
+          req.query.ordenar,
+          ['recientes', 'monto_desc', 'monto_asc', 'titulo_asc'] as const,
+          'recientes'
+        );
+
+        const rows = await query<any>(
+          `SELECT n.*, r.nombre AS receptor_nombre, r.organizacion AS receptor_org, p.titulo AS proyecto_titulo
+           FROM necesidades_donacion n
+           JOIN receptores_donacion r ON r.id = n.receptor_id
+           LEFT JOIN proyectos p ON p.id = n.proyecto_destino_id
+           ORDER BY n.created_at DESC, n.id DESC`
+        );
+        const filtered = rows.filter((item) => {
+          if (tipo && String(item.tipo_necesidad || '').toLowerCase() !== tipo) return false;
+          const monto = Number(item.monto_objetivo || 0);
+          if (priceRange.min !== null && monto < priceRange.min) return false;
+          if (priceRange.max !== null && monto > priceRange.max) return false;
+          if (q) {
+            const hay =
+              String(item.titulo || '').toLowerCase().includes(q) ||
+              String(item.descripcion || '').toLowerCase().includes(q) ||
+              String(item.receptor_nombre || '').toLowerCase().includes(q);
+            if (!hay) return false;
+          }
+          return true;
+        });
+        if (cleanSort === 'monto_desc') {
+          filtered.sort((a, b) => Number(b.monto_objetivo || 0) - Number(a.monto_objetivo || 0));
+        } else if (cleanSort === 'monto_asc') {
+          filtered.sort((a, b) => Number(a.monto_objetivo || 0) - Number(b.monto_objetivo || 0));
+        } else if (cleanSort === 'titulo_asc') {
+          filtered.sort((a, b) => String(a.titulo || '').localeCompare(String(b.titulo || ''), 'es'));
+        }
+        csvResult = buildCsvReport(
+          [
+            { header: 'ID', value: (r) => r.id },
+            { header: 'Título', value: (r) => r.titulo },
+            { header: 'Tipo', value: (r) => r.tipo_necesidad },
+            { header: 'Monto Objetivo (Bs)', value: (r) => r.monto_objetivo ?? '' },
+            { header: 'Cantidad Objetivo', value: (r) => r.cantidad_objetivo ?? '' },
+            { header: 'Unidad', value: (r) => r.unidad_medida || '' },
+            { header: 'Receptor', value: (r) => r.receptor_nombre },
+            { header: 'Organización', value: (r) => r.receptor_org || '' },
+            { header: 'Proyecto', value: (r) => r.proyecto_titulo || '' },
+            { header: 'Fecha Necesaria', value: (r) => r.fecha_necesaria || '' },
+          ],
+          filtered
+        );
+      } else if (modulo === 'postulantes') {
+        const scoreRange = validateScoreRange(req.query.avance_min, req.query.avance_max, 100);
+        if (!scoreRange.ok) return res.status(400).json({ error: scoreRange.error });
+        const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
+        const prof = normalizeCategoryFilter(req.query.profesion || req.query.categoria).toLowerCase();
+        const estadoFilter = normalizeCategoryFilter(req.query.estado).toLowerCase();
+
+        const rows = await query<any>(
+          `SELECT p.*, app.id AS postulacion_id, app.estado_general,
+                  proy.titulo AS proyecto_titulo,
+                  COALESCE((SELECT COUNT(*) FROM evaluaciones_etapas ee WHERE ee.postulacion_id = app.id AND ee.estado = 'aprobado'), 0) AS etapas_aprobadas
+           FROM postulantes p
+           LEFT JOIN LATERAL (
+             SELECT * FROM postulaciones WHERE postulante_id = p.id ORDER BY created_at DESC LIMIT 1
+           ) app ON true
+           LEFT JOIN proyectos proy ON proy.id = app.proyecto_id
+           ORDER BY p.created_at DESC`
+        );
+        const filtered = rows
+          .map((r) => ({
+            ...r,
+            porcentaje_avance: r.postulacion_id ? Math.round((Number(r.etapas_aprobadas) / 5) * 100) : 0,
+          }))
+          .filter((r) => {
+            if (prof && !String(r.profesion_ocupacion || '').toLowerCase().includes(prof)) return false;
+            if (estadoFilter && String(r.estado_general || 'sin_postulacion').toLowerCase() !== estadoFilter) return false;
+            if (scoreRange.min !== null && r.porcentaje_avance < scoreRange.min) return false;
+            if (scoreRange.max !== null && r.porcentaje_avance > scoreRange.max) return false;
+            if (q) {
+              const hay =
+                `${r.nombres} ${r.apellidos}`.toLowerCase().includes(q) ||
+                String(r.ci || '').toLowerCase().includes(q) ||
+                String(r.email || '').toLowerCase().includes(q) ||
+                String(r.habilidades || '').toLowerCase().includes(q);
+              if (!hay) return false;
+            }
+            return true;
+          });
+        csvResult = buildCsvReport(
+          [
+            { header: 'ID', value: (r) => r.id },
+            { header: 'Nombre Completo', value: (r) => `${r.nombres} ${r.apellidos}` },
+            { header: 'CI', value: (r) => r.ci },
+            { header: 'Correo', value: (r) => r.email },
+            { header: 'Profesión', value: (r) => r.profesion_ocupacion || '' },
+            { header: 'Proyecto Actual', value: (r) => r.proyecto_titulo || '' },
+            { header: 'Estado', value: (r) => r.estado_general || 'sin_postulacion' },
+            { header: 'Avance (%)', value: (r) => r.porcentaje_avance },
+          ],
+          filtered
+        );
+      } else if (modulo.startsWith('evaluacion-')) {
+        const stageMap: Record<string, string> = {
+          'evaluacion-inicial': 'inicial',
+          'evaluacion-tecnica': 'tecnica',
+          'evaluacion-personal': 'personal',
+          'evaluacion-competencias': 'competencias',
+          'evaluacion-salud': 'salud_fisica_psicologica',
+        };
+        const etapaCode = stageMap[modulo];
+        const scoreRange = validateScoreRange(req.query.puntaje_min, req.query.puntaje_max, 100);
+        if (!scoreRange.ok) return res.status(400).json({ error: scoreRange.error });
+        const cleanCategoria = normalizeCategoryFilter(req.query.categoria);
+        const cleanSort = normalizeSortOrder(req.query.ordenar, EVALUATION_SORT_OPTIONS, 'recientes');
+        const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
+        const estadoFilter = normalizeCategoryFilter(req.query.estado).toLowerCase();
+
+        const rows = await query<any>(
+          `SELECT ee.id AS etapa_id, ee.postulacion_id, ee.estado AS etapa_estado, ee.evaluador,
+                  ee.comentarios, ee.fecha_evaluacion, ee.detalle_criterios, ee.detalle_criterios_personales,
+                  p.nombres, p.apellidos, p.ci, p.profesion_ocupacion, proy.titulo AS proyecto_titulo
+           FROM evaluaciones_etapas ee
+           JOIN postulaciones app ON app.id = ee.postulacion_id
+           JOIN postulantes p ON p.id = app.postulante_id
+           JOIN proyectos proy ON proy.id = app.proyecto_id
+           WHERE ee.etapa = $1
+           ORDER BY ee.id DESC`,
+          [etapaCode]
+        );
+        const mapped = rows.map((r) => {
+          const criteria =
+            etapaCode === 'personal'
+              ? r.detalle_criterios_personales
+              : etapaCode === 'competencias'
+              ? r.detalle_criterios
+              : null;
+          let avg: number | null = null;
+          if (criteria && typeof criteria === 'object') {
+            const vals = Object.values(criteria).filter((v): v is number => typeof v === 'number');
+            if (vals.length === 5) {
+              avg = Number((vals.reduce((a, b) => a + b, 0) / 5).toFixed(2));
+            }
+          }
+          return {
+            ...r,
+            puntaje_promedio: avg,
+            postulante: { nombres: r.nombres, apellidos: r.apellidos, profesion_ocupacion: r.profesion_ocupacion },
+          };
+        });
+        const filteredBase = mapped.filter((r) => {
+          if (estadoFilter && estadoFilter !== 'todos') {
+            const norm = r.etapa_estado === 'en revision' ? 'en_revision' : r.etapa_estado;
+            if (estadoFilter === 'pendientes' || estadoFilter === 'pendiente') {
+              if (!['pendiente', 'en_revision', 'pendiente_revision'].includes(norm)) return false;
+            } else if (norm !== estadoFilter.replace(/s$/, '')) {
+              return false;
+            }
+          }
+          if (q) {
+            const hay =
+              `${r.nombres} ${r.apellidos}`.toLowerCase().includes(q) ||
+              String(r.ci || '').toLowerCase().includes(q) ||
+              String(r.proyecto_titulo || '').toLowerCase().includes(q);
+            if (!hay) return false;
+          }
+          return true;
+        });
+        const finalRows = filterAndSortEvaluationItems(filteredBase, {
+          categoria: cleanCategoria,
+          puntajeMin: scoreRange.min,
+          puntajeMax: scoreRange.max,
+          ordenar: cleanSort,
+        });
+        csvResult = buildCsvReport(
+          [
+            { header: 'Postulación', value: (r) => `KIR-${r.postulacion_id}` },
+            { header: 'Postulante', value: (r) => `${r.nombres} ${r.apellidos}` },
+            { header: 'CI', value: (r) => r.ci },
+            { header: 'Profesión', value: (r) => r.profesion_ocupacion || '' },
+            { header: 'Proyecto', value: (r) => r.proyecto_titulo },
+            { header: 'Estado Etapa', value: (r) => r.etapa_estado },
+            { header: 'Evaluador', value: (r) => r.evaluador || '' },
+            { header: 'Puntaje', value: (r) => extractEvaluationScore(r) ?? '' },
+            { header: 'Comentarios', value: (r) => r.comentarios || '' },
+            { header: 'Fecha Evaluación', value: (r) => r.fecha_evaluacion || '' },
+          ],
+          finalRows
+        );
+      } else if (modulo === 'roles') {
+        const rows = await query<any>(
+          `SELECT r.id, r.code, r.name, r.description, r.active,
+                  COALESCE(string_agg(p.code, ', ' ORDER BY p.code), '') AS permissions_csv
+           FROM roles r
+           LEFT JOIN role_permissions rp ON rp.role_id = r.id
+           LEFT JOIN permissions p ON p.id = rp.permission_id
+           GROUP BY r.id
+           ORDER BY r.name`
+        );
+        csvResult = buildCsvReport(
+          [
+            { header: 'ID', value: (r) => r.id },
+            { header: 'Código', value: (r) => r.code },
+            { header: 'Nombre', value: (r) => r.name },
+            { header: 'Descripción', value: (r) => r.description || '' },
+            { header: 'Activo', value: (r) => (r.active ? 'Sí' : 'No') },
+            { header: 'Permisos', value: (r) => r.permissions_csv },
+          ],
+          rows
+        );
+      } else {
+        // logs
+        const logsRes = await querySystemLogs({
+          module: typeof req.query.module === 'string' ? req.query.module : undefined,
+          action: typeof req.query.action === 'string' ? req.query.action : undefined,
+          status: typeof req.query.status === 'string' ? req.query.status : undefined,
+          q: typeof req.query.q === 'string' ? req.query.q : undefined,
+          fecha_desde: typeof req.query.fecha_desde === 'string' ? req.query.fecha_desde : undefined,
+          fecha_hasta: typeof req.query.fecha_hasta === 'string' ? req.query.fecha_hasta : undefined,
+          pagina: 1,
+          limite: 1000,
+        });
+        csvResult = buildCsvReport(
+          [
+            { header: 'ID', value: (r) => r.id },
+            { header: 'Fecha', value: (r) => r.created_at },
+            { header: 'Usuario', value: (r) => r.user_email || 'anónimo' },
+            { header: 'Rol', value: (r) => r.user_role || '' },
+            { header: 'Acción', value: (r) => r.action },
+            { header: 'Módulo', value: (r) => r.module },
+            { header: 'Estado', value: (r) => r.status },
+            { header: 'Formato', value: (r) => r.format || '' },
+            { header: 'Filas', value: (r) => r.row_count ?? '' },
+            { header: 'Tamaño (bytes)', value: (r) => r.file_size_bytes ?? '' },
+            { header: 'Duración (ms)', value: (r) => r.duration_ms },
+            { header: 'Detalle', value: (r) => r.details || '' },
+          ],
+          logsRes.items
+        );
+      }
+
+      const durationMs = Math.max(1, Date.now() - startMs);
+      await recordSystemLog({
+        ...getActorMeta(req),
+        action: `EXPORT_${modulo.toUpperCase().replace(/-/g, '_')}`,
+        module: modulo,
+        format: 'csv',
+        file_size_bytes: csvResult.sizeBytes,
+        row_count: csvResult.rowCount,
+        duration_ms: durationMs,
+        filters_json: req.query as Record<string, unknown>,
+        status: 'success',
+        details: `Exportación CSV de ${modulo} (${csvResult.rowCount} filas, ${csvResult.sizeBytes} bytes, ${durationMs} ms)`,
+      }).catch(() => {});
+
+      const dateStamp = new Date().toISOString().slice(0, 10);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="kiriku-${modulo}-${dateStamp}.csv"`);
+      res.setHeader('X-Export-Size-Bytes', String(csvResult.sizeBytes));
+      res.setHeader('X-Export-Duration-Ms', String(durationMs));
+      res.setHeader('X-Export-Rows', String(csvResult.rowCount));
+      return res.status(200).send(csvResult.csv);
+    } catch (err: any) {
+      const durationMs = Date.now() - startMs;
+      await recordSystemLog({
+        ...getActorMeta(req),
+        action: `EXPORT_${modulo.toUpperCase().replace(/-/g, '_')}`,
+        module: modulo,
+        format: 'csv',
+        duration_ms: durationMs,
+        filters_json: req.query as Record<string, unknown>,
+        status: 'error',
+        details: err?.message || 'Error generando reporte CSV',
+      }).catch(() => {});
+      console.error(`Error exporting module ${modulo}:`, err);
+      return res.status(500).json({ error: 'Error al generar el reporte exportable' });
+    }
+  }
+);
 
 export default router;
