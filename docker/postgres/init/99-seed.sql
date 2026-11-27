@@ -29,3 +29,12 @@ SELECT
   TRUE,
   NOW()
 WHERE NOT EXISTS (SELECT 1 FROM public.proyectos WHERE estado = 'aprobado');
+
+INSERT INTO public.roles (code, name, description)
+VALUES (
+  'socio_territorial',
+  'Socio territorial',
+  'Acompañamiento territorial y técnico de proyectos sin acceso a evaluaciones médicas'
+)
+ON CONFLICT (code) DO NOTHING;
+

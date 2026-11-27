@@ -1,0 +1,120 @@
+name: CI - Kirikú Voluntariado
+
+on:
+  push:
+    branches:
+      - main
+      - Kevin
+      - feature/michelle
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  quality-and-tests:
+    name: Lint, Build, Pruebas Unitarias e Integración PostgreSQL
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: kiriku
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: kiriku_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d kiriku"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=5
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci --include=dev
+
+      - name: Verificar tipos TypeScript (lint)
+        run: npm run lint
+
+      - name: Compilar frontend Vite (build)
+        run: npm run build
+
+      - name: Ejecutar pruebas unitarias
+        run: npm run test:unit
+
+      - name: Inicializar esquema y migraciones en PostgreSQL CI
+        env:
+          DATABASE_URL: postgresql://postgres:kiriku_ci_password@127.0.0.1:5432/kiriku?sslmode=disable
+          DATABASE_SSL: "false"
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const { Client } = require("pg");
+            (async () => {
+              const client = new Client({ connectionString: process.env.DATABASE_URL });
+              await client.connect();
+              const migrationsDir = path.join(process.cwd(), "supabase", "migrations");
+              const migrations = fs.readdirSync(migrationsDir)
+                .filter((f) => f.endsWith(".sql"))
+                .sort()
+                .map((f) => path.join(migrationsDir, f));
+              const files = [
+                path.join(process.cwd(), "docker", "postgres", "init", "00-base-schema.sql"),
+                ...migrations,
+                path.join(process.cwd(), "docker", "postgres", "init", "99-seed.sql"),
+              ];
+              for (const file of files) {
+                console.log("Ejecutando SQL:", path.relative(process.cwd(), file));
+                const sql = fs.readFileSync(file, "utf8");
+                await client.query(sql);
+              }
+              await client.end();
+            })().catch((err) => {
+              console.error(err);
+              process.exit(1);
+            });
+          '
+
+      - name: Ejecutar pruebas de integración (HTTP + PostgreSQL + Historias)
+        env:
+          DATABASE_URL: postgresql://postgres:kiriku_ci_password@127.0.0.1:5432/kiriku?sslmode=disable
+          DATABASE_SSL: "false"
+          REDIS_URL: redis://127.0.0.1:6379
+          TZ: America/La_Paz
+        run: npm run test:integration
+
+  docker-validation:
+    name: Validar docker-compose.yml y Dockerfile
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Validar configuración YAML de Docker Compose
+        run: docker compose config -q
+
+      - name: Construir imagen Docker de Kirikú
+        run: docker build -t kiriku-voluntariado:ci .
