@@ -6,6 +6,7 @@ import {
   querySystemLogs,
   recordSystemLog,
   sanitizeCsvCell,
+  setMemoryLogsModeForTest,
 } from './audit-logs';
 import {
   authenticate,
@@ -88,106 +89,112 @@ test('prueba de regresión del catálogo exportado: BOM UTF-8, columnas exactas,
 });
 
 test('recordSystemLog y querySystemLogs registran exportaciones con tamaño, duración y filtros', async () => {
-  clearMemoryLogsForTest();
+  clearMemoryLogsForTest(true);
+  try {
+    await recordSystemLog({
+      user_id: 'u-1',
+      user_email: 'admin@kiriku.org',
+      user_role: 'administrador',
+      action: 'EXPORT_CSV',
+      module: 'catalogo',
+      format: 'csv',
+      file_size_bytes: 1024,
+      row_count: 15,
+      duration_ms: 42,
+      filters_json: { categoria: 'ONG', ordenar: 'cupos_desc' },
+      status: 'success',
+      details: 'Exportación de catálogo',
+    });
 
-  await recordSystemLog({
-    user_id: 'u-1',
-    user_email: 'admin@kiriku.org',
-    user_role: 'administrador',
-    action: 'EXPORT_CSV',
-    module: 'catalogo',
-    format: 'csv',
-    file_size_bytes: 1024,
-    row_count: 15,
-    duration_ms: 42,
-    filters_json: { categoria: 'ONG', ordenar: 'cupos_desc' },
-    status: 'success',
-    details: 'Exportación de catálogo',
-  });
+    await recordSystemLog({
+      user_id: 'u-2',
+      user_email: 'voluntario@kiriku.org',
+      user_role: 'voluntario',
+      action: 'EXPORT_DENIED',
+      module: 'donaciones',
+      format: 'csv',
+      duration_ms: 5,
+      status: 'denied',
+      details: 'Sin permiso reports.export',
+    });
 
-  await recordSystemLog({
-    user_id: 'u-2',
-    user_email: 'voluntario@kiriku.org',
-    user_role: 'voluntario',
-    action: 'EXPORT_DENIED',
-    module: 'donaciones',
-    format: 'csv',
-    duration_ms: 5,
-    status: 'denied',
-    details: 'Sin permiso reports.export',
-  });
+    const allLogs = await querySystemLogs({ ordenar: 'tamano_desc' });
+    assert.equal(allLogs.resumen.total_logs, 2);
+    assert.equal(allLogs.resumen.total_exportaciones, 2);
+    assert.equal(allLogs.resumen.tamano_total_bytes, 1024);
+    assert.equal(allLogs.resumen.intentos_denegados, 1);
+    assert.equal(allLogs.items[0].module, 'catalogo');
+    assert.equal(allLogs.items[0].file_size_bytes, 1024);
+    assert.equal(allLogs.items[0].duration_ms, 42);
 
-  const allLogs = await querySystemLogs({ ordenar: 'tamano_desc' });
-  assert.equal(allLogs.resumen.total_logs, 2);
-  assert.equal(allLogs.resumen.total_exportaciones, 2);
-  assert.equal(allLogs.resumen.tamano_total_bytes, 1024);
-  assert.equal(allLogs.resumen.intentos_denegados, 1);
-  assert.equal(allLogs.items[0].module, 'catalogo');
-  assert.equal(allLogs.items[0].file_size_bytes, 1024);
-  assert.equal(allLogs.items[0].duration_ms, 42);
-
-  const deniedOnly = await querySystemLogs({ status: 'denied' });
-  assert.equal(deniedOnly.items.length, 1);
-  assert.equal(deniedOnly.items[0].action, 'EXPORT_DENIED');
+    const deniedOnly = await querySystemLogs({ status: 'denied' });
+    assert.equal(deniedOnly.items.length, 1);
+    assert.equal(deniedOnly.items[0].action, 'EXPORT_DENIED');
+  } finally {
+    setMemoryLogsModeForTest(false);
+  }
 });
 
 test('JWT y RBAC protegen la exportación por rol y registran intentos denegados', async () => {
-  clearMemoryLogsForTest();
+  clearMemoryLogsForTest(true);
+  try {
+    const token = signAuthToken({ sub: 'user-99', email: 'coord@kiriku.org', rol: 'coordinador' }, 600);
+    const verified = verifyAuthToken(token);
+    assert.ok(verified);
+    assert.equal(verified.sub, 'user-99');
+    assert.equal(verified.rol, 'coordinador');
 
-  const token = signAuthToken({ sub: 'user-99', email: 'coord@kiriku.org', rol: 'coordinador' }, 600);
-  const verified = verifyAuthToken(token);
-  assert.ok(verified);
-  assert.equal(verified.sub, 'user-99');
-  assert.equal(verified.rol, 'coordinador');
+    const tampered = `${token.slice(0, -1)}${token.endsWith('a') ? 'b' : 'a'}`;
+    assert.equal(verifyAuthToken(tampered), null);
 
-  const tampered = `${token.slice(0, -1)}${token.endsWith('a') ? 'b' : 'a'}`;
-  assert.equal(verifyAuthToken(tampered), null);
+    // Sin token -> 401
+    const noAuthReq = { headers: {} } as AuthenticatedRequest;
+    const noAuthRes = createMockRes();
+    let nextCalled = false;
+    await authenticate(noAuthReq, noAuthRes.res, () => {
+      nextCalled = true;
+    });
+    assert.equal(nextCalled, false);
+    assert.equal(noAuthRes.state.statusCode, 401);
 
-  // Sin token -> 401
-  const noAuthReq = { headers: {} } as AuthenticatedRequest;
-  const noAuthRes = createMockRes();
-  let nextCalled = false;
-  await authenticate(noAuthReq, noAuthRes.res, () => {
-    nextCalled = true;
-  });
-  assert.equal(nextCalled, false);
-  assert.equal(noAuthRes.state.statusCode, 401);
+    // Rol sin permiso reports.export -> 403 + log EXPORT_DENIED
+    const guard = requirePermission('reports.export');
+    const unprivReq = {
+      userId: 'user-vol',
+      userEmail: 'vol@kiriku.org',
+      userRole: 'voluntario',
+      permissions: ['projects.read'],
+      params: { modulo: 'catalogo' },
+      path: '/exports/catalogo',
+    } as unknown as AuthenticatedRequest;
+    const unprivRes = createMockRes();
+    guard(unprivReq, unprivRes.res, () => {
+      nextCalled = true;
+    });
+    assert.equal(nextCalled, false);
+    assert.equal(unprivRes.state.statusCode, 403);
 
-  // Rol sin permiso reports.export -> 403 + log EXPORT_DENIED
-  const guard = requirePermission('reports.export');
-  const unprivReq = {
-    userId: 'user-vol',
-    userEmail: 'vol@kiriku.org',
-    userRole: 'voluntario',
-    permissions: ['projects.read'],
-    params: { modulo: 'catalogo' },
-    path: '/exports/catalogo',
-  } as unknown as AuthenticatedRequest;
-  const unprivRes = createMockRes();
-  guard(unprivReq, unprivRes.res, () => {
-    nextCalled = true;
-  });
-  assert.equal(nextCalled, false);
-  assert.equal(unprivRes.state.statusCode, 403);
+    await new Promise((r) => setTimeout(r, 20));
+    const logs = await querySystemLogs({ action: 'EXPORT_DENIED' });
+    assert.equal(logs.items.length, 1);
+    assert.equal(logs.items[0].module, 'catalogo');
+    assert.equal(logs.items[0].status, 'denied');
 
-  await new Promise((r) => setTimeout(r, 20));
-  const logs = await querySystemLogs({ action: 'EXPORT_DENIED' });
-  assert.equal(logs.items.length, 1);
-  assert.equal(logs.items[0].module, 'catalogo');
-  assert.equal(logs.items[0].status, 'denied');
-
-  // Rol con permiso reports.export -> next()
-  const privReq = {
-    userId: 'user-admin',
-    userEmail: 'admin@kiriku.org',
-    userRole: 'administrador',
-    permissions: ['reports.export'],
-    params: { modulo: 'catalogo' },
-    path: '/exports/catalogo',
-  } as unknown as AuthenticatedRequest;
-  const privRes = createMockRes();
-  guard(privReq, privRes.res, () => {
-    nextCalled = true;
-  });
-  assert.equal(nextCalled, true);
+    // Rol con permiso reports.export -> next()
+    const privReq = {
+      userId: 'user-admin',
+      userEmail: 'admin@kiriku.org',
+      userRole: 'administrador',
+      permissions: ['reports.export'],
+      params: { modulo: 'catalogo' },
+      path: '/exports/catalogo',
+    } as unknown as AuthenticatedRequest;
+    const privRes = createMockRes();
+    guard(privReq, privRes.res, () => {
+      nextCalled = true;
+    });
+    assert.equal(nextCalled, true);
+  } finally {
+    setMemoryLogsModeForTest(false);
+  }
 });

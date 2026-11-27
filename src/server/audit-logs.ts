@@ -42,6 +42,7 @@ export interface CsvColumn<T> {
 const MAX_MEMORY_LOGS = 500;
 const memoryLogs: SystemLogRecord[] = [];
 let memoryLogSeq = 1;
+let forceMemoryLogsForTest = false;
 
 /**
  * Neutralizes spreadsheet formula injection (=, +, -, @, tab, CR) and formats RFC 4180 CSV cells.
@@ -114,7 +115,7 @@ export async function recordSystemLog(entry: SystemLogInput): Promise<SystemLogR
   const durationMs = Math.max(0, Math.round(entry.duration_ms ?? 0));
   const status: SystemLogStatus = entry.status || 'success';
 
-  if (!isDatabaseConfigured) {
+  if (!isDatabaseConfigured || forceMemoryLogsForTest) {
     return pushMemoryLog({ ...entry, duration_ms: durationMs, status });
   }
 
@@ -223,7 +224,7 @@ function queryMemoryLogs(filters: SystemLogsQueryFilters) {
 }
 
 export async function querySystemLogs(filters: SystemLogsQueryFilters) {
-  if (!isDatabaseConfigured) {
+  if (!isDatabaseConfigured || forceMemoryLogsForTest) {
     return queryMemoryLogs(filters);
   }
 
@@ -328,7 +329,12 @@ export async function querySystemLogs(filters: SystemLogsQueryFilters) {
   }
 }
 
-export function clearMemoryLogsForTest() {
+export function setMemoryLogsModeForTest(enabled: boolean) {
+  forceMemoryLogsForTest = enabled;
+}
+
+export function clearMemoryLogsForTest(forceMemory = false) {
+  forceMemoryLogsForTest = forceMemory;
   memoryLogs.length = 0;
   memoryLogSeq = 1;
 }

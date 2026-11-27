@@ -97,7 +97,7 @@ router.use((_req: Request, res: Response, next: NextFunction) => {
 });
 
 // Helper to calculate age from birth date
-function calculateAge(birthDateString: string | Date): number {
+export function calculateAge(birthDateString: string | Date): number {
   const today = new Date();
   if (typeof birthDateString === 'string' && /^\d{4}-\d{2}-\d{2}/.test(birthDateString)) {
     const [birthYear, birthMonth, birthDay] = birthDateString.split('T')[0].split('-').map(Number);
@@ -1971,9 +1971,9 @@ router.get('/evaluaciones/inicial/metricas', async (_req: Request, res: Response
   }
 });
 
-const EVALUATION_SORT_OPTIONS = ['recientes', 'nombre_asc', 'puntaje_desc', 'puntaje_asc'] as const;
+export const EVALUATION_SORT_OPTIONS = ['recientes', 'nombre_asc', 'puntaje_desc', 'puntaje_asc'] as const;
 
-function extractEvaluationScore(item: any): number | null {
+export function extractEvaluationScore(item: any): number | null {
   if (typeof item.puntaje_promedio === 'number' && Number.isFinite(item.puntaje_promedio)) {
     return item.puntaje_promedio;
   }
@@ -1985,7 +1985,7 @@ function extractEvaluationScore(item: any): number | null {
   return null;
 }
 
-function filterAndSortEvaluationItems<
+export function filterAndSortEvaluationItems<
   T extends {
     postulante?: { nombres?: string; apellidos?: string; profesion_ocupacion?: string | null };
     puntaje_promedio?: number | null;

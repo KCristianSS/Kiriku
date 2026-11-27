@@ -19,11 +19,11 @@ async function startServer() {
   // Serve public assets (e.g. /logo.png) with instant response
   app.use(express.static(path.resolve(__dirname, 'public')));
 
+  // Mount Swagger UI documentation at /api-docs and /api/openapi.json (OpenAPI 3.0)
+  setupSwagger(app);
+
   // Mount API router
   app.use('/api', apiRouter);
-
-  // Mount Swagger UI documentation at /api-docs (OpenAPI 3.0)
-  setupSwagger(app);
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');

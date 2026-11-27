@@ -31,12 +31,42 @@ export const supabaseAdmin: SupabaseClient | null =
       })
     : null;
 
+export function shouldUseSsl(connectionString: string, databaseSslEnv = process.env.DATABASE_SSL): boolean {
+  const envFlag = databaseSslEnv?.trim().toLowerCase();
+  if (envFlag === 'false' || envFlag === '0' || envFlag === 'disable') {
+    return false;
+  }
+  if (envFlag === 'true' || envFlag === '1' || envFlag === 'require') {
+    return true;
+  }
+
+  const trimmed = connectionString.trim();
+  if (!trimmed) return false;
+
+  try {
+    const parsed = new URL(trimmed);
+    const sslMode = parsed.searchParams.get('sslmode')?.toLowerCase();
+    if (sslMode === 'disable') return false;
+    if (sslMode === 'require' || sslMode === 'verify-ca' || sslMode === 'verify-full') return true;
+
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === 'postgres' || host === 'db') {
+      return false;
+    }
+    return true;
+  } catch {
+    return !/sslmode=disable/i.test(trimmed);
+  }
+}
+
 export const dbPool: Pool = DATABASE_URL
   ? new Pool({
       connectionString: DATABASE_URL,
-      ssl: {
-        rejectUnauthorized: false,
-      },
+      ssl: shouldUseSsl(DATABASE_URL)
+        ? {
+            rejectUnauthorized: false,
+          }
+        : false,
       max: 10,
       idleTimeoutMillis: 30000,
     })

@@ -1,24 +1,95 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kiriku-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kiriku}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kiriku_local_dev}
+      TZ: ${TZ:-America/La_Paz}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init/00-base-schema.sql:/docker-entrypoint-initdb.d/00-base-schema.sql:ro
+      - ./supabase/migrations/202610190001_roles_permissions.sql:/docker-entrypoint-initdb.d/01-roles-permissions.sql:ro
+      - ./supabase/migrations/202611210001_competencias_evaluacion.sql:/docker-entrypoint-initdb.d/02-competencias-evaluacion.sql:ro
+      - ./supabase/migrations/202611210002_evaluacion_personal.sql:/docker-entrypoint-initdb.d/03-evaluacion-personal.sql:ro
+      - ./supabase/migrations/202611220001_donaciones_trazabilidad.sql:/docker-entrypoint-initdb.d/04-donaciones-trazabilidad.sql:ro
+      - ./supabase/migrations/202611240001_donaciones_ofrecidas.sql:/docker-entrypoint-initdb.d/05-donaciones-ofrecidas.sql:ro
+      - ./supabase/migrations/202611240002_donation_needs_and_recipients.sql:/docker-entrypoint-initdb.d/06-donation-needs.sql:ro
+      - ./supabase/migrations/202611250001_audit_logs_and_export_rbac.sql:/docker-entrypoint-initdb.d/07-audit-logs.sql:ro
+      - ./docker/postgres/init/99-seed.sql:/docker-entrypoint-initdb.d/99-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-kiriku}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - kiriku-net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: kiriku-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - kiriku-net
+    restart: unless-stopped
+
   kiriku-app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: kiriku-voluntariado
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:3000"
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000
-      TZ: America/La_Paz
+      TZ: ${TZ:-America/La_Paz}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-kiriku_local_dev}@postgres:5432/${POSTGRES_DB:-kiriku}?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:-}
+      VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - kiriku-net
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    container_name: kiriku-redis
-    profiles:
-      - cache
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
+networks:
+  kiriku-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
